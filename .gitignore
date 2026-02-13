@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE Settings
+.vscode/
+.idea/
+
+# Environment Variables / Secrets
+.env
+
+# Logs
+*.log
+logs/
+
+# Data and Databases
+data/
+*.db
+*.db-shm
+*.db-wal
+*.csv
+
+# Temporary / Backup Files
+*.bak
+*.swp
+*.swo
+
+# OS Generated Files
+.DS_Store
+umbs/
+
+# Generated Reports (HTML files)
+# Comment out if you want to save these reports to git
+*.html

@@ -1,0 +1,24 @@
+[Unit]
+Description=Streamlit Dashboard Service
+After=network.target
+
+[Service]
+# User running the application
+User=trader
+WorkingDirectory=/home/trader/PairsTrading
+
+# Command to start the application
+# We use the full path to the virtual environment's streamlit executable
+ExecStart=/home/trader/PairsTrading/.venv/bin/streamlit run app.py --server.port 8501 --server.address=0.0.0.0 --server.headless=true
+
+# Restart policy: always restart if it crashes
+Restart=always
+RestartSec=5
+
+# Output logs to syslog (view with journalctl -u dashboard)
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=streamlit-dashboard
+
+[Install]
+WantedBy=multi-user.target
