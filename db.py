@@ -217,10 +217,50 @@ def init_db(con: sqlite3.Connection) -> None:
             );
         """)
 
+    # 12. Event Risk tables (earnings, dividends, macro, audit log)
+    from event_risk import init_event_tables
+    init_event_tables(con)
+
+    # 13. Manual Commands
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS manual_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command TEXT NOT NULL,
+            payload TEXT, -- JSON
+            status TEXT DEFAULT 'PENDING',
+            created_at TEXT,
+            processed_at TEXT
+        );
+    """)
 
 # ==============================================================================
 # WRITERS
 # ==============================================================================
+
+def add_manual_command(con: sqlite3.Connection, command: str, payload: dict = None) -> None:
+    import json
+    payload_json = json.dumps(payload) if payload else None
+    created_at = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            INSERT INTO manual_commands (command, payload, status, created_at)
+            VALUES (?, ?, 'PENDING', ?)
+        """, (command, payload_json, created_at))
+
+def mark_command_processed(con: sqlite3.Connection, command_id: int, status: str = "PROCESSED") -> None:
+    processed_at = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            UPDATE manual_commands 
+            SET status = ?, processed_at = ?
+            WHERE id = ?
+        """, (status, processed_at, command_id))
+
+def get_pending_commands(con: sqlite3.Connection) -> List[Dict[str, Any]]:
+    cur = con.execute("SELECT * FROM manual_commands WHERE status = 'PENDING' ORDER BY created_at ASC")
+    rows = cur.fetchall()
+    return [dict(zip([c[0] for c in cur.description], row)) for row in rows]
+
 
 # ==============================================================================
 # HELPERS

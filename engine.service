@@ -1,0 +1,18 @@
+[Unit]
+Description=PairsTrading Engine (1m)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=trader
+WorkingDirectory=/home/trader/PairsTrading
+EnvironmentFile=/home/trader/PairsTrading/.env
+ExecStart=/home/trader/PairsTrading/.venv/bin/python -u run_engine_1m.py --engine-id=US_1M
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/home/trader/PairsTrading/engine_1m.log
+StandardError=append:/home/trader/PairsTrading/engine_1m.log
+SyslogIdentifier=pairs-engine
+
+[Install]
+WantedBy=multi-user.target

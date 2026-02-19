@@ -903,6 +903,167 @@ else:
     else:
         st.caption(f"No {selected_filter.lower().replace(' only', '')} candidates found.")
 
+# ----------------------------
+# EVENT RISK PANEL
+# ----------------------------
+try:
+    from event_risk import compute_pair_event_state, init_event_tables, EASTERN
+    from zoneinfo import ZoneInfo as _ZI
+    
+    # Ensure event tables exist
+    init_event_tables(con)
+    
+    now_et = datetime.now(_ZI("America/New_York"))
+    
+    # Collect event states for all enabled pairs
+    event_states = {}
+    active_multiplier_pairs = []
+    blocked_pairs = []
+    all_upcoming = []
+    
+    enabled_pairs = params[params["enabled"] == 1]["pair"].tolist() if not params.empty else []
+    
+    for pair_name in enabled_pairs:
+        try:
+            state = compute_pair_event_state(pair_name, now_et, con)
+            event_states[pair_name] = state
+            
+            if state["multiplier"] > 1.0:
+                active_multiplier_pairs.append({
+                    "pair": pair_name,
+                    "multiplier": state["multiplier"],
+                    "entry_blocked": state["entry_blocked"],
+                    "events": ", ".join(e.get("window_label", e["type"]) for e in state["active_events"]),
+                    "is_overridden": state.get("is_overridden", False),
+                })
+            if state["entry_blocked"]:
+                blocked_pairs.append(pair_name)
+            
+            for ev in state.get("next_events_10d", []):
+                all_upcoming.append({
+                    "pair": pair_name,
+                    "leg": ev.get("leg", ""),
+                    "type": ev["type"].upper(),
+                    "event_date": ev["event_date"],
+                    "days_to": ev.get("trading_days_to", ""),
+                    "label": ev.get("label", ""),
+                })
+        except Exception:
+            pass
+    
+    # Only show panel if there's event data
+    has_event_data = len(active_multiplier_pairs) > 0 or len(all_upcoming) > 0
+    panel_label = "📅 Event Risk"
+    if active_multiplier_pairs:
+        panel_label += f" — {len(active_multiplier_pairs)} active"
+    if blocked_pairs:
+        panel_label += f" | {len(blocked_pairs)} blocked"
+    
+    with st.expander(panel_label, expanded=len(active_multiplier_pairs) > 0):
+        if not has_event_data:
+            st.caption("No event risk data. Event tables may not be populated yet (run engine to refresh).")
+        else:
+            # --- Active Multipliers ---
+            if active_multiplier_pairs:
+                st.write("### 🔴 Active Multipliers")
+                act_df = pd.DataFrame(active_multiplier_pairs)
+                
+                # Ensure column exists
+                if "is_overridden" not in act_df.columns:
+                    act_df["is_overridden"] = False
+
+                # Editable DataFrame
+                edited_act = st.data_editor(
+                    act_df,
+                    column_config={
+                        "pair": st.column_config.Column("Pair", disabled=True),
+                        "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.0, step=0.1, help="Set 0.0 to clear override."),
+                        "entry_blocked": st.column_config.CheckboxColumn("Entry Blocked"),
+                        "events": st.column_config.Column("Active Events", disabled=True),
+                        "is_overridden": st.column_config.CheckboxColumn("Overridden?", disabled=True)
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="event_risk_editor",
+                    disabled=["pair", "events", "is_overridden"] 
+                )
+                
+                # Detect Changes
+                try:
+                    changes = []
+                    # Align indices to compare
+                    act_indexed = act_df.set_index("pair")
+                    edited_indexed = edited_act.set_index("pair")
+                    
+                    for pair, row in edited_indexed.iterrows():
+                        if pair not in act_indexed.index: continue
+                        old_row = act_indexed.loc[pair]
+                        
+                        # Compare floats with tolerance
+                        val_changed = abs(float(row["multiplier"]) - float(old_row["multiplier"])) > 0.001
+                        blk_changed = bool(row["entry_blocked"]) != bool(old_row["entry_blocked"])
+                        
+                        if val_changed or blk_changed:
+                            changes.append({
+                                "pair": pair, 
+                                "multiplier": float(row["multiplier"]), 
+                                "entry_blocked": bool(row["entry_blocked"])
+                            })
+                    
+                    if changes:
+                        import event_risk
+                        for change in changes:
+                            val = change["multiplier"]
+                            blk = change["entry_blocked"]
+                            if val == 0.0:
+                                event_risk.set_event_override(con, change["pair"], multiplier=None, entry_blocked=None)
+                            else:
+                                event_risk.set_event_override(con, change["pair"], multiplier=val, entry_blocked=blk)
+                        
+                        st.success(f"Saved {len(changes)} override(s). Refreshing...")
+                        time.sleep(0.5)
+                        st.rerun()
+                        
+                except Exception as e:
+                    st.error(f"Failed to save overrides: {e}")
+            else:
+                st.success("✅ No active event multipliers right now.")
+            
+            # --- Upcoming Events ---
+            if all_upcoming:
+                # Deduplicate: same event_date + leg + type
+                seen_events = set()
+                deduped = []
+                for ev in all_upcoming:
+                    key = (ev["event_date"], ev["leg"], ev["type"])
+                    if key not in seen_events:
+                        seen_events.add(key)
+                        deduped.append(ev)
+                deduped.sort(key=lambda x: (x.get("days_to", 99), x["event_date"]))
+                
+                st.write("### 📋 Upcoming Events (10 Trading Days)")
+                up_df = pd.DataFrame(deduped[:30])  # Limit display
+                
+                st.dataframe(
+                    up_df,
+                    column_config={
+                        "pair": "Pair",
+                        "leg": "Ticker",
+                        "type": "Event Type",
+                        "event_date": "Event Date",
+                        "days_to": st.column_config.NumberColumn("Trading Days To", format="%d"),
+                        "label": "Label",
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            else:
+                st.caption("No upcoming events in the next 10 trading days.")
+
+except Exception as e:
+    # Fail silently if event risk module not available
+    pass
+
 # Detailed Engine Status (Collapsed by default if healthy)
 with st.expander("Engine Details", expanded=(sys_color!="green")):
     if not heartbeats:
@@ -943,7 +1104,7 @@ with st.expander("Engine Details", expanded=(sys_color!="green")):
                 active_color = "orange"
             elif status == "Error":
                 active_color = "red"
-            elif status == "Starting" or status == "Warmup":
+            elif status == "Starting" or "Warmup" in status:
                 active_color = "blue"
                 
             with cols[i]:
@@ -1176,7 +1337,26 @@ if not positions.empty:
                 time.sleep(1) # Give time for toast
                 st.rerun()
             except Exception as e:
-                st.error(f"Failed to save limits: {e}")
+                st.error("Failed to save limits: " + str(e))
+
+    st.divider()
+    st.markdown("### Manual Actions")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        pair_to_close = st.selectbox("Select Position to Close", options=positions["pair"].tolist(), key="manual_close_select")
+    with col2:
+        # Add some vertical spacing to align button
+        st.write("") 
+        st.write("")
+        if st.button("Close Position", type="primary", use_container_width=True):
+            if pair_to_close:
+                try:
+                    db.add_manual_command(con, "CLOSE_POSITION", {"pair": pair_to_close})
+                    st.success(f"Close request sent for {pair_to_close}")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to send close request: {e}")
 
 else:
     st.caption("No open positions.")
@@ -1300,6 +1480,53 @@ if "selected_pair_override" in st.session_state:
 selected_pair = st.selectbox("Select Pair", all_pairs, index=pair_index) if all_pairs else None
 
 if selected_pair:
+    # --- Per-Pair Event Risk Detail ---
+    try:
+        from event_risk import compute_pair_event_state
+        from zoneinfo import ZoneInfo as _ZI2
+        
+        _now_et = datetime.now(_ZI2("America/New_York"))
+        pair_event = compute_pair_event_state(selected_pair, _now_et, con)
+        
+        if pair_event["multiplier"] > 1.0 or pair_event["entry_blocked"] or pair_event["next_events_10d"]:
+            ev_col1, ev_col2, ev_col3 = st.columns(3)
+            
+            with ev_col1:
+                mult_val = pair_event["multiplier"]
+                mult_color = "🟢" if mult_val == 1.0 else ("🟡" if mult_val < 1.5 else "🔴")
+                st.metric("Event Multiplier", f"{mult_val:.2f}x", delta=f"{mult_color}")
+            
+            with ev_col2:
+                if pair_event["entry_blocked"]:
+                    st.metric("Entry Status", "🔒 BLOCKED")
+                else:
+                    st.metric("Entry Status", "✅ Allowed")
+            
+            with ev_col3:
+                events_str = ", ".join(
+                    e.get("window_label", e["type"]) for e in pair_event["active_events"]
+                ) if pair_event["active_events"] else "None"
+                st.metric("Active Events", events_str[:40])
+            
+            # Next events for this pair
+            if pair_event["next_events_10d"]:
+                with st.expander(f"📅 Upcoming Events for {selected_pair}", expanded=False):
+                    next_df = pd.DataFrame(pair_event["next_events_10d"])
+                    st.dataframe(
+                        next_df,
+                        column_config={
+                            "type": "Type",
+                            "leg": "Ticker",
+                            "event_date": "Date",
+                            "trading_days_to": st.column_config.NumberColumn("Days To", format="%d"),
+                            "label": "Label",
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+    except Exception:
+        pass
+    
     # Fetch 75 days of history (time-based, not bar count)
     # Use high limit and filter by timestamp
     history_raw = db.get_pair_history(con, selected_pair, timeframe="15m", limit=3000)

@@ -35,3 +35,11 @@ class PriceCache:
         last_t = s.index[-1]
         last_val = s.iloc[-1]
         return last_t, last_val
+
+    def get_latest_prices(self) -> dict[str, float]:
+        """Return {symbol: latest_close} for all cached symbols."""
+        out = {}
+        for sym, s in self.data.items():
+            if not s.empty:
+                out[sym] = float(s.iloc[-1])
+        return out

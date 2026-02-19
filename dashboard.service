@@ -7,6 +7,9 @@ After=network.target
 User=trader
 WorkingDirectory=/home/trader/PairsTrading
 
+# Load API keys from .env (file is not tracked in git — safe)
+EnvironmentFile=/home/trader/PairsTrading/.env
+
 # Command to start the application
 # We use the full path to the virtual environment's streamlit executable
 ExecStart=/home/trader/PairsTrading/.venv/bin/streamlit run app.py --server.port 8501 --server.address=0.0.0.0 --server.headless=true

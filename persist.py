@@ -46,9 +46,12 @@ def persist_state(
     pnl = portfolio.pnl_df()
     if pnl is not None and not pnl.empty:
         last_row = pnl.iloc[-1]
+        base_equity = float(last_row.get("equity", 0.0))
+        # Include unrealized in total equity for display
+        total_equity = base_equity + float(unrealized_pnl)
         save_pnl_snapshot(
             con, 
-            equity=float(last_row.get("equity", 0.0)),
+            equity=total_equity,
             realized=float(last_row.get("realized_pnl", 0.0)),
             unrealized=float(unrealized_pnl), # Use the computed MTM PnL
             open_count=int(last_row.get("open_positions", 0)),

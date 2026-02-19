@@ -44,6 +44,10 @@ from live_metrics import build_live_metrics_table, build_pair_series_table
 from portfolio import PaperPortfolio
 from strategy.live_trader import process_pair_barclose_fast
 from jp_market_time import sleep_for_next_bar, sleep_short
+from event_risk import (
+    compute_pair_event_state, refresh_event_data, init_event_tables,
+    log_event_risk, Z_EXIT_CAP,
+)
 
 # Logger setup
 logging.basicConfig(
@@ -132,6 +136,9 @@ class TradingEngine1m:
         
         # EOD State
         self._pnl_recorded_today = False
+        
+        # Event Risk tracking
+        self._event_data_refreshed_today = False
 
     def start(self):
         log.info(f"Starting 1-Minute Engine | ID: {self.engine_id}")
@@ -238,33 +245,28 @@ class TradingEngine1m:
         
         # 6. Initial Persist (so dashboard reflects warmup immediately)
         try:
-            # We need to build a dummy metrics_df or use the one from compute_slow_metrics?
-            # compute_slow_metrics returns dict of Series? No, returns DataFrame? 
-            # Let's check compute_slow_metrics return type.
-            # actually run_engine_1m lines 205: self.metrics_df = compute_slow_metrics(...)
-            # So we use self.metrics_df
+            # Build metrics from 15m cache (same as _run_fast_strategy_cycle)
+            symbol_frames = {s: self.cache_15m.data[s].to_frame() for s in self.symbols if s in self.cache_15m.data}
+            pair_frames = build_pair_frames(symbol_frames, self.pairs, how="inner")
+            metrics_df = build_live_metrics_table(pair_frames)
             
-            # We also need positions_df and pnl.
-            # logic similar to main loop:
-            # We need latest prices from cache (which we just warmed up)
-            # cache_15m.get_latest_prices() returns {symbol: price}
             latest_prices = self.cache_15m.get_latest_prices()
             mtm_df = self.portfolio.mark_to_market_unrealized(latest_prices)
-            mtm_positions = mtm_df # Use the DF returned by mark_to_market
-            
-            total_equity = self.portfolio.equity() # + unrealized? 
-            # Portfolio equity() returns realized only? Let's check. 
-            # portfolio.py L47: return self.starting_equity + self.realized_pnl
-            # So we need to add unrealized.
-            unrealized_pnl = mtm_df["unrealized_pnl"].sum() if not mtm_df.empty else 0.0
-            
-            # Note: persist_state expects positions_df to be the output of mark_to_market_unrealized (with 'unrealized_pnl' column)
-            
-            
+
+            unrealized_pnl = 0.0
+            mtm_positions = self.portfolio.open_positions_df()
+            if not mtm_df.empty and "unrealized_pnl" in mtm_df.columns:
+                unrealized_pnl = mtm_df["unrealized_pnl"].sum()
+                if not mtm_positions.empty:
+                    pnl_map = mtm_df.set_index("pair")
+                    mtm_positions["pnl_unrealized"] = mtm_positions["pair"].map(pnl_map["unrealized_pnl"]).fillna(0.0)
+                    mtm_positions["last_price1"] = mtm_positions["pair"].map(pnl_map["last_price1"])
+                    mtm_positions["last_price2"] = mtm_positions["pair"].map(pnl_map["last_price2"])
+
             persist_state(
-                self.con, 
-                self.metrics_df, 
-                self.portfolio, 
+                self.con,
+                metrics_df,
+                self.portfolio,
                 None, # No new closed trades in setup
                 self.engine_id,
                 positions_df=mtm_positions,
@@ -273,6 +275,17 @@ class TradingEngine1m:
             log.info("Initial state persisted.")
         except Exception as e:
             log.error(f"Failed to persist initial state: {e}")
+
+        # 7. Refresh event risk data (earnings, dividends, macro)
+        try:
+            self.heartbeat_thread.set_status("Warmup-EventRisk")
+            log.info("Refreshing event risk data...")
+            init_event_tables(self.con)
+            refresh_event_data(self.con, self.symbols)
+            self._event_data_refreshed_today = True
+            log.info("Event risk data refreshed.")
+        except Exception as e:
+            log.error(f"Failed to refresh event risk data: {e}")
 
         notifier.notify(f"✅ Warmup complete (1m mode). Tracking {len(self.symbols)} symbols.")
 
@@ -339,6 +352,7 @@ class TradingEngine1m:
             if current_open and not was_market_open:
                 notifier.notify("🔔 <b>Market Open</b> (US)")
                 self._pnl_recorded_today = False  # Reset for new day
+                self._event_data_refreshed_today = False  # Refresh events for new day
             elif not current_open and was_market_open:
                 notifier.notify("🏁 <b>Market Closed</b> (US)")
                 # Trigger EOD P&L processing immediately on close if not done
@@ -348,6 +362,19 @@ class TradingEngine1m:
             
 
             
+            # 1b. Daily event data refresh (once per trading day)
+            if current_open and not self._event_data_refreshed_today:
+                try:
+                    log.info("Daily event risk data refresh...")
+                    refresh_event_data(self.con, self.symbols)
+                    self._event_data_refreshed_today = True
+                    log.info("Event risk data refreshed for today.")
+                except Exception as e:
+                    log.warning(f"Failed daily event data refresh: {e}")
+
+            # 1. Processing Manual Commands
+            self._process_manual_commands()
+
             # 2. Fetch 1m data
             new_bars_found = self._update_1m_prices()
             
@@ -357,6 +384,9 @@ class TradingEngine1m:
                 self._refresh_15m_cache()
                 self._update_slow_metrics()
             
+            
+
+
             # 4. Run fast strategy cycle (only if new bars AND market open)
             if new_bars_found:
                 if current_open:
@@ -488,6 +518,28 @@ class TradingEngine1m:
                 z_entry_thresh = float(p["z_entry"])
                 z_exit_thresh = float(p["z_exit"])
                 
+                # --- EVENT RISK LAYER ---
+                import pytz
+                now_et = datetime.now(pytz.timezone('US/Eastern'))
+                event_state = compute_pair_event_state(pair_name, now_et, self.con)
+                event_multiplier = event_state["multiplier"]
+                event_entry_blocked = event_state["entry_blocked"]
+                
+                # Apply multiplier to thresholds
+                z_entry_thresh *= event_multiplier
+                z_exit_thresh = min(z_exit_thresh * event_multiplier, Z_EXIT_CAP)
+                
+                # Log event state when active
+                if event_multiplier > 1.0 or event_entry_blocked:
+                    log_event_risk(
+                        self.con, pair_name,
+                        datetime.now(timezone.utc).isoformat(),
+                        event_multiplier, event_entry_blocked,
+                        event_state["active_events"],
+                        z_entry_thresh, z_exit_thresh,
+                    )
+                # --- END EVENT RISK LAYER ---
+                
                 # Count how many of last 3 evaluations exceeded entry threshold
                 qualifying_count = sum(1 for z in self._z_history[pair_name] if abs(z) >= z_entry_thresh)
                 passed_persistence = qualifying_count >= 2
@@ -499,7 +551,9 @@ class TradingEngine1m:
                 
                 # --- DETERMINE LOG REASON ---
                 log_reason = None
-                if would_enter:
+                if event_entry_blocked and not in_position and abs(z_now) >= z_entry_thresh:
+                    log_reason = "BLOCKED_ENTRY_EVENT_DAY"
+                elif would_enter:
                     log_reason = "entry"
                 elif would_exit:
                     log_reason = "exit"
@@ -549,7 +603,7 @@ class TradingEngine1m:
                     max_drift_pct=float(p["max_drift_pct"]),
                     max_drift_delta=float(p.get("max_drift_delta", 0)),
                     alloc_pct=float(p["alloc_pct"]),
-                    entry_allowed=passed_persistence,
+                    entry_allowed=passed_persistence and not event_entry_blocked,
                 )
                 
                 if trade_action:
@@ -817,6 +871,98 @@ class TradingEngine1m:
                 
         except Exception as e:
             log.warning(f"Failed to restore PnL from DB: {e}")
+
+    def _process_manual_commands(self):
+        try:
+            commands = db.get_pending_commands(self.con)
+            for cmd in commands:
+                cmd_type = cmd["command"]
+                payload = json.loads(cmd["payload"]) if cmd["payload"] else {}
+                
+                log.info(f"Processing manual command: {cmd_type} payload={payload}")
+                
+                if cmd_type == "CLOSE_POSITION":
+                    pair = payload.get("pair")
+                    if pair in self.portfolio.positions:
+                        log.info(f"Manually closing position for {pair}")
+                        # Use market prices from cache
+                        self._close_position(pair, reason="MANUAL_CLOSE")
+                        db.mark_command_processed(self.con, cmd["id"], status="COMPLETED")
+                    else:
+                        log.warning(f"Cannot close position {pair}: Not found.")
+                        db.mark_command_processed(self.con, cmd["id"], status="FAILED_NOT_FOUND")
+                else:
+                    log.warning(f"Unknown command: {cmd_type}")
+                    db.mark_command_processed(self.con, cmd["id"], status="FAILED_UNKNOWN")
+                    
+        except Exception as e:
+            log.error(f"Error processing manual commands: {e}")
+
+    def _close_position(self, pair: str, reason: str):
+        try:
+            pos = self.portfolio.positions.get(pair)
+            if not pos:
+                return
+
+            # Get current prices
+            ts1, p1 = self.cache_1m.get_last(pos.sym1)
+            ts2, p2 = self.cache_1m.get_last(pos.sym2)
+            
+            if not p1 or not p2:
+                log.warning(f"Cannot close {pair}: missing prices")
+                return
+            
+            # Calculate PnL (for action dict only, portfolio.exit calculates it too)
+            if pos.direction == "SHORT_SPREAD":
+                pnl = (pos.entry_price1 - p1) * pos.qty1 + (p2 - pos.entry_price2) * pos.qty2
+            else:
+                pnl = (p1 - pos.entry_price1) * pos.qty1 + (pos.entry_price2 - p2) * pos.qty2
+            
+            # Calculate Z (approx)
+            slow = self.slow_metrics.get(pair)
+            z_now = 0.0
+            if slow and p2:
+                spread = p1 / p2
+                z_now = slow.compute_fast_zscore(pair, spread) or 0.0
+
+            # Execute exit in portfolio
+            bar_ts = datetime.now(timezone.utc)
+            
+            self.portfolio.exit(pair, exit_time=bar_ts, exit_price1=p1, exit_price2=p2, exit_z=z_now)
+            
+            # Construct action dict
+            try:
+                holding_minutes = int((bar_ts - pos.entry_time).total_seconds() / 60)
+            except:
+                holding_minutes = 0
+            
+            event_id = f"{pair}:EXIT:{bar_ts.isoformat()}:{pos.direction}:{reason}"
+            
+            action = {
+                "action": "EXIT",
+                "event_id": event_id,
+                "pair": pair,
+                "sym1": pos.sym1,
+                "sym2": pos.sym2,
+                "price1": p1,
+                "price2": p2,
+                "z": z_now,
+                "direction": pos.direction,
+                "pnl": float(pnl),
+                "entry_z": pos.entry_z,
+                "timestamp": bar_ts.isoformat(),
+                "holding_minutes": holding_minutes,
+                "exit_reason": reason,
+                "qty1": pos.qty1,
+                "qty2": pos.qty2,
+            }
+            
+            # Send notifications
+            self._send_trade_notification(action)
+            log.info(f"Closed {pair} due to {reason}")
+            
+        except Exception as e:
+            log.error(f"Failed to close {pair}: {e}")
 
     def _force_close_all_positions(self, reason: str):
         """
