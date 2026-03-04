@@ -1,71 +1,163 @@
-# Pairs Trading System - Operations Guide
+# Pairs Trading System
+Production-Deployed Statistical Arbitrage Engine (US Equities)
 
-## 1. Dashboard Management (Streamlit)
-The dashboard runs as a systemd service (`dashboard.service`), meaning it runs in the background and starts automatically on boot.
-
-### **Access**
-**URL**: http://170.64.216.29:8501
-
-### **Restarting the Dashboard**
-If the dashboard is stuck or you updated `app.py`:
-```bash
-sudo systemctl restart dashboard
-```
-
-### **Checking Status**
-To see if it's running:
-```bash
-sudo systemctl status dashboard
-```
-
-### **Viewing Logs**
-To see real-time logs (errors, print statements):
-```bash
-journalctl -u dashboard -f
-```
-*(Press `Ctrl+C` to exit logs)*
+Live Monitoring Dashboard: http://170.64.216.29:8501/
 
 ---
 
-## 2. Trading Engine Management (Python)
-The trading engine (`run_engine.py`) is currently run manually in the background using `nohup`.
+## Overview
 
-### **Starting the Engine**
-Use the start script to launch the engine (and check that it's running):
-```bash
-./start_all.sh
-```
-*Note: This script will verify if the engine is already running. It does NOT start the dashboard anymore since systemd handles that.*
+This project is a fully deployed statistical arbitrage system that trades mean reversion across 50+ US equity pairs.
 
-### **Stopping the Engine**
-To stop the trading engine:
-```bash
-pkill -f "run_engine.py"
-```
+The system runs continuously on a VPS, evaluates signals every minute during NYSE hours, simulates execution via a stateful portfolio engine, and exposes a real-time monitoring dashboard.
 
-### **Viewing Engine Logs**
-```bash
-tail -f engine_poly.log
-```
+It is designed as a production trading system — not a notebook prototype.
 
 ---
 
-## 3. Server Maintenance
+## Strategy Design
 
-### **System Restart**
-If you reboot the VPS (`sudo reboot`):
-1.  **Dashboard**: Will start AUTOMATICALLY. You don't need to do anything.
-2.  **Trading Engine**: Will NOT start automatically. You must SSH in and run:
-    ```bash
-    cd PairsTrading
-    ./start_all.sh
-    ```
+### Spread Model
 
-### **Updating Code**
-If you pull new code from git or make changes:
-1.  **Dashboard**: Restart to apply changes: `sudo systemctl restart dashboard`
-2.  **Engine**: Restart if logic changed:
-    ```bash
-    pkill -f "run_engine.py"
-    ./start_all.sh
-    ```
+Spread is defined as a price ratio:
+
+    spread = price_1 / price_2
+
+Z-score:
+
+    z = (spread - rolling_30d_mean) / rolling_30d_std
+
+- 30 trading day lookback
+- Weekly rebalance of slow statistics (Fridays only)
+- Forward-filled intra-week
+- Lookahead bias removed via shift(1)
+
+---
+
+### Entry & Exit
+
+Entry:
+- |z| ≥ 3.5 (configurable per pair)
+- 2-of-3 consecutive 1-minute bars must exceed threshold (persistence filter)
+
+Exit:
+- |z| ≤ 1.0 (configurable)
+- Exit threshold dynamically widened near events (capped at 1.5)
+
+Re-entry:
+- No cooldown
+
+---
+
+### Hedge Ratio
+
+Two-layer hedge system:
+
+1. Direct beta (instantaneous ratio, updated every bar)
+2. 30-day rolling beta (weekly rebalance, forward-filled)
+
+This reduces hedge noise while preserving statistical calibration.
+
+---
+
+### Position Sizing
+
+Beta-adjusted dollar-neutral:
+
+    capital_per_trade = equity * alloc_pct
+    leg1 = capital_per_trade / (1 + beta)
+    leg2 = leg1 * beta
+
+Default:
+- Starting equity: $100,000
+- Allocation: 10% per trade
+
+---
+
+## Risk Management
+
+Multi-layered protection:
+
+- Beta drift entry filter (6.5%)
+- Beta drift in-position stop (10%)
+- Earnings multiplier (1.5x exit widening)
+- Dividend multiplier (1.3x)
+- Macro event multiplier (1.2x)
+- Exit threshold cap (1.5)
+- Market-hours gating
+- One position per pair
+- Persistence filter for false signal reduction
+- Data staleness detection
+- Engine heartbeat monitoring
+- Telegram alert throttling
+
+The system adjusts behavior around event risk rather than blindly disabling trading.
+
+---
+
+## Architecture
+
+Dual-layer signal architecture:
+
+Slow analytics layer (15m bars)
+- Computes rolling mean, std, beta
+- Rebalanced weekly
+- Cached for reuse
+
+Fast execution layer (1m bars)
+- Evaluates signals every 60 seconds
+- Applies risk filters
+- Executes simulated trades
+- Persists state to database
+
+This preserves statistical stability while enabling responsive execution.
+
+---
+
+## Production Infrastructure
+
+- Deployed on DigitalOcean VPS (Ubuntu)
+- systemd-managed services
+- SQLite (WAL mode) for concurrent engine/dashboard access
+- Crash recovery via persistent state
+- Event calendar integration (earnings/dividends/macro)
+- Real-time Streamlit dashboard
+- Modular separation: analytics → strategy → execution → persistence → monitoring
+
+---
+
+## Data
+
+- Polygon.io (1m + 15m OHLCV)
+- Earnings & dividends integration
+- 75-day historical warmup
+- Append-only CSV storage + SQLite persistence
+
+---
+
+## Scale & Performance
+
+- 50+ concurrent pairs
+- Medium-frequency (1-minute evaluation)
+- Lightweight memory footprint
+- Designed for robustness rather than HFT latency
+
+---
+
+## What Differentiates This System
+
+- Weekly hedge rebalance to reduce intra-week beta noise
+- Explicit lookahead bias prevention
+- Event-aware dynamic exit thresholds
+- Beta drift enforcement both at entry and during hold
+- Persistence filter to reduce microstructure noise
+- Real-time operational monitoring dashboard
+- Full production deployment pipeline
+
+This project bridges research logic and production trading infrastructure.
+
+---
+
+## Disclaimer
+
+For educational and research purposes only.
