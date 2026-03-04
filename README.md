@@ -70,7 +70,7 @@ Beta-adjusted dollar-neutral:
 
 Default:
 - Starting equity: $100,000
-- Allocation: 10% per trade
+- Allocation: 6.5% per trade
 
 ---
 
