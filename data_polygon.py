@@ -13,7 +13,7 @@ from typing import Dict, Iterable, Optional, Tuple, Any
 log = logging.getLogger("data_polygon")
 
 # Constants
-API_KEY = os.getenv("POLYGON_API_KEY", "Uo5696bmc67zfyX23fbjBqfEk7nPYkWu")
+API_KEY = os.getenv("POLYGON_API_KEY")
 BASE_URL = "https://api.polygon.io"
 EASTERN = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")

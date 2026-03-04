@@ -2,7 +2,7 @@ import os
 import requests
 from datetime import date
 
-API_KEY = os.getenv("Uo5696bmc67zfyX23fbjBqfEk7nPYkWu")
+API_KEY = os.getenv("POLYGON_API_KEY")
 BASE_URL = "https://api.polygon.io"
 
 def get_aggs(ticker: str, multiplier: int, timespan: str, start: str, end: str, adjusted=True, limit=50000):

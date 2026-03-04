@@ -5,7 +5,7 @@ import json
 import pandas as pd
 
 
-API_KEY = os.getenv("POLYGON_API_KEY", "Uo5696bmc67zfyX23fbjBqfEk7nPYkWu")
+API_KEY = os.getenv("POLYGON_API_KEY")
 
 def check_price(ticker):
     # Get last 1 minute bar

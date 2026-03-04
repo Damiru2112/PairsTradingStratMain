@@ -44,7 +44,7 @@ MACRO_WINDOW = (0, 0)        # day 0 only
 
 Z_EXIT_CAP = 1.5  # Exit threshold hard cap
 
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY", "Uo5696bmc67zfyX23fbjBqfEk7nPYkWu")
+POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
 MACRO_CALENDAR_PATH = Path(__file__).parent / "data" / "macro_calendar.json"
 
 # NYSE calendar (singleton)
