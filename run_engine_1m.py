@@ -919,11 +919,10 @@ class TradingEngine1m:
                 pnl = (p1 - pos.entry_price1) * pos.qty1 + (pos.entry_price2 - p2) * pos.qty2
             
             # Calculate Z (approx)
-            slow = self.slow_metrics.get(pair)
             z_now = 0.0
-            if slow and p2:
+            if p2:
                 spread = p1 / p2
-                z_now = slow.compute_fast_zscore(pair, spread) or 0.0
+                z_now = self.slow_metrics.compute_fast_zscore(pair, spread) or 0.0
 
             # Execute exit in portfolio
             bar_ts = datetime.now(timezone.utc)
@@ -994,11 +993,10 @@ class TradingEngine1m:
                 
                 # Calculate Z (approx using last known or 0 if missing, strictly for logging)
                 # We can try to re-compute or just use 0.0
-                slow = self.slow_metrics.get(pair)
                 z_now = 0.0
-                if slow:
+                if p2:
                     spread = p1 / p2
-                    z_now = slow.compute_fast_zscore(pair, spread) or 0.0
+                    z_now = self.slow_metrics.compute_fast_zscore(pair, spread) or 0.0
 
                 # Execute exit in portfolio
                 entry_time = pos.entry_time
