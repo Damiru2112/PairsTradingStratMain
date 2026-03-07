@@ -907,38 +907,76 @@ else:
 # EVENT RISK PANEL
 # ----------------------------
 try:
-    from event_risk import compute_pair_event_state, init_event_tables, EASTERN
+    from event_risk import (
+        compute_pair_event_state, resolve_event_trade_constraints,
+        init_event_tables, get_event_type_configs, set_event_type_config,
+        EASTERN,
+    )
+    import event_risk as _event_risk_mod
     from zoneinfo import ZoneInfo as _ZI
-    
+
     # Ensure event tables exist
     init_event_tables(con)
-    
+
     now_et = datetime.now(_ZI("America/New_York"))
-    
+
+    # Build lookup maps for z_now and positions
+    _z_lookup = {}
+    if not metrics.empty and "pair" in metrics.columns and "z" in metrics.columns:
+        for _, row in metrics.iterrows():
+            _z_lookup[row["pair"]] = row["z"]
+
+    _pos_lookup = {}
+    if not positions.empty and "pair" in positions.columns and "direction" in positions.columns:
+        for _, row in positions.iterrows():
+            _pos_lookup[row["pair"]] = {"direction": row["direction"]}
+
     # Collect event states for all enabled pairs
     event_states = {}
+    constraint_states = {}
     active_multiplier_pairs = []
     blocked_pairs = []
+    hold_warning_pairs = []
     all_upcoming = []
-    
+
     enabled_pairs = params[params["enabled"] == 1]["pair"].tolist() if not params.empty else []
-    
+
     for pair_name in enabled_pairs:
         try:
             state = compute_pair_event_state(pair_name, now_et, con)
             event_states[pair_name] = state
-            
-            if state["multiplier"] > 1.0:
+
+            # Layer 2: direction-aware constraints
+            z_val = _z_lookup.get(pair_name)
+            pos_val = _pos_lookup.get(pair_name)
+            constraints = resolve_event_trade_constraints(
+                pair_name, state, z_now=z_val, current_position=pos_val,
+            )
+            constraint_states[pair_name] = constraints
+
+            # Determine if pair should appear in active multipliers table
+            show_active = (
+                constraints["effective_multiplier"] > 1.0
+                or constraints["effective_entry_blocked"]
+                or constraints["dividend_short_leg_blocked"]
+                or constraints["hold_warning"]
+            )
+            if show_active:
                 active_multiplier_pairs.append({
                     "pair": pair_name,
-                    "multiplier": state["multiplier"],
-                    "entry_blocked": state["entry_blocked"],
+                    "multiplier": constraints["effective_multiplier"],
+                    "entry_blocked": constraints["effective_entry_blocked"],
                     "events": ", ".join(e.get("window_label", e["type"]) for e in state["active_events"]),
+                    "blocking_reasons": "; ".join(constraints["blocking_reasons"]) if constraints["blocking_reasons"] else "",
+                    "hold_warning": constraints["hold_warning"],
+                    "warning_reasons": "; ".join(constraints["warning_reasons"]) if constraints["warning_reasons"] else "",
                     "is_overridden": state.get("is_overridden", False),
                 })
-            if state["entry_blocked"]:
+            if constraints["effective_entry_blocked"]:
                 blocked_pairs.append(pair_name)
-            
+            if constraints["hold_warning"]:
+                hold_warning_pairs.append((pair_name, constraints["warning_reasons"]))
+
             for ev in state.get("next_events_10d", []):
                 all_upcoming.append({
                     "pair": pair_name,
@@ -950,7 +988,7 @@ try:
                 })
         except Exception:
             pass
-    
+
     # Only show panel if there's event data
     has_event_data = len(active_multiplier_pairs) > 0 or len(all_upcoming) > 0
     panel_label = "📅 Event Risk"
@@ -958,16 +996,71 @@ try:
         panel_label += f" — {len(active_multiplier_pairs)} active"
     if blocked_pairs:
         panel_label += f" | {len(blocked_pairs)} blocked"
-    
+
     with st.expander(panel_label, expanded=len(active_multiplier_pairs) > 0):
+        # --- Event Type Defaults (configurable multipliers) ---
+        st.write("### Event Type Defaults")
+        evt_configs = get_event_type_configs(con)
+        cfg_rows = []
+        for etype in ["earnings", "dividend", "macro"]:
+            cfg = evt_configs.get(etype, {})
+            cfg_rows.append({
+                "event_type": etype,
+                "multiplier": cfg.get("multiplier", 1.0),
+                "entry_blocked": cfg.get("entry_blocked", True),
+            })
+        cfg_df = pd.DataFrame(cfg_rows)
+
+        edited_cfg = st.data_editor(
+            cfg_df,
+            column_config={
+                "event_type": st.column_config.Column("Event Type", disabled=True),
+                "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.1, step=0.1, help="Threshold expansion factor when event is active."),
+                "entry_blocked": st.column_config.CheckboxColumn("Block Entry on Day 0", help="Block new entries on event day."),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="event_type_config_editor",
+            disabled=["event_type"],
+        )
+
+        # Detect & save event type config changes
+        try:
+            cfg_changes = []
+            for i, row in edited_cfg.iterrows():
+                orig = cfg_df.iloc[i]
+                mult_changed = abs(float(row["multiplier"]) - float(orig["multiplier"])) > 0.001
+                blk_changed = bool(row["entry_blocked"]) != bool(orig["entry_blocked"])
+                if mult_changed or blk_changed:
+                    cfg_changes.append({
+                        "event_type": row["event_type"],
+                        "multiplier": float(row["multiplier"]),
+                        "entry_blocked": bool(row["entry_blocked"]),
+                    })
+            if cfg_changes:
+                for chg in cfg_changes:
+                    set_event_type_config(con, chg["event_type"], chg["multiplier"], chg["entry_blocked"])
+                st.success(f"Saved {len(cfg_changes)} event type config change(s). Refreshing...")
+                time.sleep(0.5)
+                st.rerun()
+        except Exception as e:
+            st.error(f"Failed to save event type config: {e}")
+
+        st.divider()
+
         if not has_event_data:
             st.caption("No event risk data. Event tables may not be populated yet (run engine to refresh).")
         else:
+            # --- Hold Warnings ---
+            if hold_warning_pairs:
+                for wp_pair, wp_reasons in hold_warning_pairs:
+                    st.warning(f"{wp_pair}: {'; '.join(wp_reasons)}")
+
             # --- Active Multipliers ---
             if active_multiplier_pairs:
-                st.write("### 🔴 Active Multipliers")
+                st.write("### Active Multipliers")
                 act_df = pd.DataFrame(active_multiplier_pairs)
-                
+
                 # Ensure column exists
                 if "is_overridden" not in act_df.columns:
                     act_df["is_overridden"] = False
@@ -980,55 +1073,57 @@ try:
                         "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.0, step=0.1, help="Set 0.0 to clear override."),
                         "entry_blocked": st.column_config.CheckboxColumn("Entry Blocked"),
                         "events": st.column_config.Column("Active Events", disabled=True),
-                        "is_overridden": st.column_config.CheckboxColumn("Overridden?", disabled=True)
+                        "blocking_reasons": st.column_config.Column("Blocking Reasons", disabled=True),
+                        "hold_warning": st.column_config.CheckboxColumn("Hold Warning", disabled=True),
+                        "warning_reasons": st.column_config.Column("Warning Reasons", disabled=True),
+                        "is_overridden": st.column_config.CheckboxColumn("Overridden?", disabled=True),
                     },
                     hide_index=True,
                     use_container_width=True,
                     key="event_risk_editor",
-                    disabled=["pair", "events", "is_overridden"] 
+                    disabled=["pair", "events", "blocking_reasons", "hold_warning", "warning_reasons", "is_overridden"],
                 )
-                
+
                 # Detect Changes
                 try:
                     changes = []
                     # Align indices to compare
                     act_indexed = act_df.set_index("pair")
                     edited_indexed = edited_act.set_index("pair")
-                    
+
                     for pair, row in edited_indexed.iterrows():
                         if pair not in act_indexed.index: continue
                         old_row = act_indexed.loc[pair]
-                        
+
                         # Compare floats with tolerance
                         val_changed = abs(float(row["multiplier"]) - float(old_row["multiplier"])) > 0.001
                         blk_changed = bool(row["entry_blocked"]) != bool(old_row["entry_blocked"])
-                        
+
                         if val_changed or blk_changed:
                             changes.append({
-                                "pair": pair, 
-                                "multiplier": float(row["multiplier"]), 
+                                "pair": pair,
+                                "multiplier": float(row["multiplier"]),
                                 "entry_blocked": bool(row["entry_blocked"])
                             })
-                    
+
                     if changes:
-                        import event_risk
                         for change in changes:
                             val = change["multiplier"]
                             blk = change["entry_blocked"]
                             if val == 0.0:
-                                event_risk.set_event_override(con, change["pair"], multiplier=None, entry_blocked=None)
+                                _event_risk_mod.set_event_override(con, change["pair"], multiplier=None, entry_blocked=None)
                             else:
-                                event_risk.set_event_override(con, change["pair"], multiplier=val, entry_blocked=blk)
-                        
+                                _event_risk_mod.set_event_override(con, change["pair"], multiplier=val, entry_blocked=blk)
+
                         st.success(f"Saved {len(changes)} override(s). Refreshing...")
                         time.sleep(0.5)
                         st.rerun()
-                        
+
                 except Exception as e:
                     st.error(f"Failed to save overrides: {e}")
             else:
-                st.success("✅ No active event multipliers right now.")
-            
+                st.success("No active event multipliers right now.")
+
             # --- Upcoming Events ---
             if all_upcoming:
                 # Deduplicate: same event_date + leg + type
@@ -1040,10 +1135,10 @@ try:
                         seen_events.add(key)
                         deduped.append(ev)
                 deduped.sort(key=lambda x: (x.get("days_to", 99), x["event_date"]))
-                
-                st.write("### 📋 Upcoming Events (10 Trading Days)")
+
+                st.write("### Upcoming Events (10 Trading Days)")
                 up_df = pd.DataFrame(deduped[:30])  # Limit display
-                
+
                 st.dataframe(
                     up_df,
                     column_config={
@@ -1488,16 +1583,16 @@ if selected_pair:
         _now_et = datetime.now(_ZI2("America/New_York"))
         pair_event = compute_pair_event_state(selected_pair, _now_et, con)
         
-        if pair_event["multiplier"] > 1.0 or pair_event["entry_blocked"] or pair_event["next_events_10d"]:
+        if pair_event["multiplier"] > 1.0 or pair_event["base_entry_blocked"] or pair_event["next_events_10d"]:
             ev_col1, ev_col2, ev_col3 = st.columns(3)
-            
+
             with ev_col1:
                 mult_val = pair_event["multiplier"]
                 mult_color = "🟢" if mult_val == 1.0 else ("🟡" if mult_val < 1.5 else "🔴")
                 st.metric("Event Multiplier", f"{mult_val:.2f}x", delta=f"{mult_color}")
-            
+
             with ev_col2:
-                if pair_event["entry_blocked"]:
+                if pair_event["base_entry_blocked"]:
                     st.metric("Entry Status", "🔒 BLOCKED")
                 else:
                     st.metric("Entry Status", "✅ Allowed")

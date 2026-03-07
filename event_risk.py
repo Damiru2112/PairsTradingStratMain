@@ -2,8 +2,9 @@
 """
 Event Risk Layer for Pairs Trading Engine.
 
-Provides compute_pair_event_state() which returns multiplier, entry_blocked,
-and active/upcoming event info for a given pair.
+Two-layer architecture:
+  Layer 1: compute_pair_event_state() — pure event detection (no direction awareness)
+  Layer 2: resolve_event_trade_constraints() — direction-aware blocking/warnings
 
 Data sources:
   - Earnings: yfinance (.earnings_dates)
@@ -47,8 +48,23 @@ Z_EXIT_CAP = 1.5  # Exit threshold hard cap
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
 MACRO_CALENDAR_PATH = Path(__file__).parent / "data" / "macro_calendar.json"
 
+# Fallback constants (used when event_type_config rows are missing)
+_FALLBACK_CONFIGS = {
+    "earnings": {"multiplier": EARNINGS_MULTIPLIER, "entry_blocked": True},
+    "dividend": {"multiplier": DIVIDEND_MULTIPLIER, "entry_blocked": False},
+    "macro":    {"multiplier": MACRO_MULTIPLIER,    "entry_blocked": True},
+}
+
 # NYSE calendar (singleton)
 _nyse_cal = None
+
+
+def parse_pair_symbols(pair: str) -> Tuple[str, str]:
+    """Canonical pair parser. Returns (sym1, sym2) from 'SYM1-SYM2'."""
+    parts = pair.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid pair format: {pair!r}, expected 'SYM1-SYM2'")
+    return parts[0], parts[1]
 
 
 def _get_nyse_cal():
@@ -278,6 +294,28 @@ def init_event_tables(con: sqlite3.Connection) -> None:
             );
         """)
 
+        # 6. Event type configuration (configurable multipliers & blocking policy)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS event_type_config (
+                event_type TEXT PRIMARY KEY,
+                multiplier REAL NOT NULL,
+                entry_blocked INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT
+            );
+        """)
+        # Seed defaults if table is empty
+        existing = con.execute("SELECT COUNT(*) FROM event_type_config").fetchone()[0]
+        if existing == 0:
+            now_iso = datetime.now(UTC).isoformat()
+            con.executemany(
+                "INSERT INTO event_type_config (event_type, multiplier, entry_blocked, updated_at) VALUES (?, ?, ?, ?)",
+                [
+                    ("earnings", EARNINGS_MULTIPLIER, 1, now_iso),
+                    ("dividend", DIVIDEND_MULTIPLIER, 0, now_iso),  # dividends: allow by default
+                    ("macro",    MACRO_MULTIPLIER,    1, now_iso),
+                ],
+            )
+
 
 def refresh_event_data(con: sqlite3.Connection, tickers: List[str]) -> None:
     """
@@ -331,7 +369,52 @@ def refresh_event_data(con: sqlite3.Connection, tickers: List[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CORE API: compute_pair_event_state
+# EVENT TYPE CONFIG (configurable multipliers & blocking policy)
+# ---------------------------------------------------------------------------
+
+def get_event_type_configs(con: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    """
+    Read event type configs from DB.
+    Returns {event_type: {"multiplier": float, "entry_blocked": bool}}.
+    Falls back to _FALLBACK_CONFIGS with a warning for missing rows.
+    """
+    configs = {}
+    try:
+        rows = con.execute("SELECT event_type, multiplier, entry_blocked FROM event_type_config").fetchall()
+        for r in rows:
+            configs[r[0]] = {"multiplier": float(r[1]), "entry_blocked": bool(r[2])}
+    except sqlite3.OperationalError:
+        pass  # Table doesn't exist yet
+
+    # Fill in any missing event types from fallbacks
+    for etype, fallback in _FALLBACK_CONFIGS.items():
+        if etype not in configs:
+            log.warning(
+                "event_type_config missing for '%s', using fallback multiplier=%.1f, entry_blocked=%s",
+                etype, fallback["multiplier"], fallback["entry_blocked"],
+            )
+            configs[etype] = dict(fallback)
+
+    return configs
+
+
+def set_event_type_config(
+    con: sqlite3.Connection,
+    event_type: str,
+    multiplier: float,
+    entry_blocked: bool,
+) -> None:
+    """Upsert event type configuration."""
+    now_iso = datetime.now(UTC).isoformat()
+    with con:
+        con.execute("""
+            INSERT OR REPLACE INTO event_type_config (event_type, multiplier, entry_blocked, updated_at)
+            VALUES (?, ?, ?, ?)
+        """, (event_type, multiplier, 1 if entry_blocked else 0, now_iso))
+
+
+# ---------------------------------------------------------------------------
+# CORE API: compute_pair_event_state (Layer 1 — Pure Detection)
 # ---------------------------------------------------------------------------
 
 def _get_event_override(con: sqlite3.Connection, pair: str) -> Optional[Dict[str, Any]]:
@@ -407,7 +490,7 @@ def compute_pair_event_state(
     con: sqlite3.Connection,
 ) -> Dict[str, Any]:
     """
-    Main API: computes event-risk state for a pair at a given time.
+    Layer 1 — Pure event detection. No direction awareness.
 
     Args:
         pair: "SYM1-SYM2"
@@ -417,46 +500,47 @@ def compute_pair_event_state(
     Returns:
         {
             "multiplier": float,
-            "entry_blocked": bool,
+            "base_entry_blocked": bool,
+            "base_blocking_reasons": List[str],
             "active_events": [...],
             "next_events_10d": [...],
+            "is_overridden": bool,
         }
     """
-    parts = pair.split("-")
-    if len(parts) != 2:
-        return {"multiplier": 1.0, "entry_blocked": False, "active_events": [], "next_events_10d": []}
+    try:
+        sym1, sym2 = parse_pair_symbols(pair)
+    except ValueError:
+        return {
+            "multiplier": 1.0, "base_entry_blocked": False,
+            "base_blocking_reasons": [], "active_events": [],
+            "next_events_10d": [], "is_overridden": False,
+        }
 
-    sym1, sym2 = parts[0], parts[1]
     today = current_trading_date(current_dt_et)
 
+    # Read configurable multipliers & blocking policy from DB
+    configs = get_event_type_configs(con)
+
     # Search window: cover the largest possible window around today
-    # Earnings [-1,+2] means we need events from today-2 to today+1
-    # (if event is 2 days ago, today is day +2 relative to event)
-    # To be safe, query ±5 trading days worth of calendar days
     query_start = today - timedelta(days=10)
-    query_end = today + timedelta(days=20)  # 10 trading days forward ≈ 14 calendar days
+    query_end = today + timedelta(days=20)
 
     active_events = []
     multipliers = []
-    entry_blocked = False
+    base_entry_blocked = False
+    base_blocking_reasons: List[str] = []
 
     # --- Process per-leg events ---
     for leg_ticker in [sym1, sym2]:
         # Earnings
+        earnings_cfg = configs.get("earnings", _FALLBACK_CONFIGS["earnings"])
         earnings = _query_ticker_earnings(con, leg_ticker, query_start, query_end)
         for ev in earnings:
             ev_date = date.fromisoformat(ev["date"])
             offset = trading_day_offset(ev_date, today)
-            # offset > 0 means event is in the past (today is after event)
-            # offset < 0 means event is in the future (today is before event)
-            # We want: window is [-1, +2] around event
-            # offset == 0: event day = today
-            # offset == 1: event was 1 trading day ago
-            # offset == -1: event is tomorrow
 
             if EARNINGS_WINDOW[0] <= -offset <= EARNINGS_WINDOW[1]:
-                # Inside active window
-                days_to_event = -offset  # positive = future, negative = past
+                days_to_event = -offset
                 window_label = f"earnings({'day 0' if offset == 0 else f'{-offset:+d}'})"
 
                 active_events.append({
@@ -465,13 +549,17 @@ def compute_pair_event_state(
                     "event_date": ev["date"],
                     "days_to_event": days_to_event,
                     "window_label": window_label,
+                    "config_multiplier": earnings_cfg["multiplier"],
+                    "config_entry_blocked": earnings_cfg["entry_blocked"],
                 })
-                multipliers.append(EARNINGS_MULTIPLIER)
+                multipliers.append(earnings_cfg["multiplier"])
 
-                if offset == 0:
-                    entry_blocked = True  # Event day
+                if offset == 0 and earnings_cfg["entry_blocked"]:
+                    base_entry_blocked = True
+                    base_blocking_reasons.append(f"earnings(day 0, {leg_ticker})")
 
         # Dividends
+        dividend_cfg = configs.get("dividend", _FALLBACK_CONFIGS["dividend"])
         dividends = _query_ticker_dividends(con, leg_ticker, query_start, query_end)
         for ev in dividends:
             ev_date = date.fromisoformat(ev["date"])
@@ -487,13 +575,18 @@ def compute_pair_event_state(
                     "event_date": ev["date"],
                     "days_to_event": days_to_event,
                     "window_label": window_label,
+                    "config_multiplier": dividend_cfg["multiplier"],
+                    "config_entry_blocked": dividend_cfg["entry_blocked"],
                 })
-                multipliers.append(DIVIDEND_MULTIPLIER)
+                multipliers.append(dividend_cfg["multiplier"])
 
-                if offset == 0:
-                    entry_blocked = True  # Ex-date day
+                # Dividend blocking only applies if config says so (default: False)
+                if offset == 0 and dividend_cfg["entry_blocked"]:
+                    base_entry_blocked = True
+                    base_blocking_reasons.append(f"dividend(day 0, {leg_ticker})")
 
     # --- Process macro events (market-wide, not per-leg) ---
+    macro_cfg = configs.get("macro", _FALLBACK_CONFIGS["macro"])
     macro_events = _query_macro_events(con, query_start, query_end)
     for ev in macro_events:
         ev_date = date.fromisoformat(ev["date"])
@@ -501,7 +594,8 @@ def compute_pair_event_state(
 
         if MACRO_WINDOW[0] <= -offset <= MACRO_WINDOW[1]:
             days_to_event = -offset
-            window_label = f"macro({ev.get('subtype', '')} day 0)"
+            subtype = ev.get("subtype", "")
+            window_label = f"macro({subtype} day 0)"
 
             active_events.append({
                 "type": "macro",
@@ -509,11 +603,14 @@ def compute_pair_event_state(
                 "event_date": ev["date"],
                 "days_to_event": days_to_event,
                 "window_label": window_label,
+                "config_multiplier": macro_cfg["multiplier"],
+                "config_entry_blocked": macro_cfg["entry_blocked"],
             })
-            multipliers.append(MACRO_MULTIPLIER)
+            multipliers.append(macro_cfg["multiplier"])
 
-            if offset == 0:
-                entry_blocked = True  # Macro event day — blocks all
+            if offset == 0 and macro_cfg["entry_blocked"]:
+                base_entry_blocked = True
+                base_blocking_reasons.append(f"macro({subtype} day 0)")
 
     # --- Compute final multiplier ---
     multiplier = max(multipliers) if multipliers else 1.0
@@ -526,7 +623,7 @@ def compute_pair_event_state(
             multiplier = float(override["multiplier"])
             is_overridden = True
         if override["entry_blocked"] is not None:
-            entry_blocked = bool(override["entry_blocked"])
+            base_entry_blocked = bool(override["entry_blocked"])
             is_overridden = True
 
     # --- Next 10 trading days events (for dashboard) ---
@@ -562,10 +659,126 @@ def compute_pair_event_state(
 
     return {
         "multiplier": multiplier,
-        "entry_blocked": entry_blocked,
+        "base_entry_blocked": base_entry_blocked,
+        "base_blocking_reasons": base_blocking_reasons,
         "active_events": active_events,
         "next_events_10d": sorted(next_events_10d, key=lambda x: x.get("trading_days_to", 99)),
-        "is_overridden": is_overridden
+        "is_overridden": is_overridden,
+    }
+
+
+# ---------------------------------------------------------------------------
+# LAYER 2: resolve_event_trade_constraints (Direction-Aware)
+# ---------------------------------------------------------------------------
+
+def resolve_event_trade_constraints(
+    pair: str,
+    event_state: Dict[str, Any],
+    z_now: Optional[float] = None,
+    current_position: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Layer 2 — Direction-aware blocking and warnings.
+
+    Takes raw event state from compute_pair_event_state() and resolves
+    trade constraints based on z_now direction and current position.
+
+    Args:
+        pair: "SYM1-SYM2"
+        event_state: output of compute_pair_event_state()
+        z_now: current z-score (>0 → short sym1, <0 → short sym2, None/0 → unknown)
+        current_position: {"direction": "SHORT_SPREAD"|"LONG_SPREAD"} or None
+
+    Returns:
+        {
+            "effective_multiplier": float,
+            "effective_entry_blocked": bool,
+            "dividend_short_leg_blocked": bool,
+            "intended_short_leg": str | None,
+            "current_short_leg": str | None,
+            "hold_warning": bool,
+            "hold_blocked": bool,
+            "blocking_reasons": List[str],
+            "warning_reasons": List[str],
+            "active_events": List[Dict],
+        }
+    """
+    try:
+        sym1, sym2 = parse_pair_symbols(pair)
+    except ValueError:
+        return {
+            "effective_multiplier": 1.0, "effective_entry_blocked": False,
+            "dividend_short_leg_blocked": False,
+            "intended_short_leg": None, "current_short_leg": None,
+            "hold_warning": False, "hold_blocked": False,
+            "blocking_reasons": [], "warning_reasons": [],
+            "active_events": [],
+        }
+
+    # Seed blocking reasons from Layer 1
+    blocking_reasons: List[str] = list(event_state.get("base_blocking_reasons", []))
+    warning_reasons: List[str] = []
+
+    effective_entry_blocked = event_state.get("base_entry_blocked", False)
+    effective_multiplier = event_state.get("multiplier", 1.0)
+    dividend_short_leg_blocked = False
+
+    # Determine intended short leg from z_now
+    intended_short_leg: Optional[str] = None
+    if z_now is not None and z_now != 0:
+        # z > 0 → SHORT_SPREAD → sym1 is shorted
+        # z < 0 → LONG_SPREAD → sym2 is shorted
+        intended_short_leg = sym1 if z_now > 0 else sym2
+
+    # Determine current short leg from existing position
+    current_short_leg: Optional[str] = None
+    if current_position:
+        direction = current_position.get("direction", "")
+        if direction == "SHORT_SPREAD":
+            current_short_leg = sym1
+        elif direction == "LONG_SPREAD":
+            current_short_leg = sym2
+
+    # Process dividend events for direction-aware blocking
+    hold_warning = False
+    hold_blocked = False
+    active_dividend_events = [
+        e for e in event_state.get("active_events", []) if e.get("type") == "dividend"
+    ]
+
+    for div_ev in active_dividend_events:
+        div_leg = div_ev.get("leg", "")
+
+        # Entry blocking: dividend on would-be-short leg
+        if intended_short_leg is not None:
+            if div_leg == intended_short_leg:
+                dividend_short_leg_blocked = True
+                effective_entry_blocked = True
+                blocking_reasons.append(f"dividend({div_leg} short leg)")
+        elif active_dividend_events:
+            # z_now is None or 0 — can't determine direction
+            warning_reasons.append(
+                f"dividend active on {div_leg}, direction unknown (z_now={'None' if z_now is None else z_now})"
+            )
+
+        # Hold warning: dividend on current short leg in existing position
+        if current_short_leg is not None and div_leg == current_short_leg:
+            hold_warning = True
+            warning_reasons.append(
+                f"dividend on short leg {div_leg} in open position"
+            )
+
+    return {
+        "effective_multiplier": effective_multiplier,
+        "effective_entry_blocked": effective_entry_blocked,
+        "dividend_short_leg_blocked": dividend_short_leg_blocked,
+        "intended_short_leg": intended_short_leg,
+        "current_short_leg": current_short_leg,
+        "hold_warning": hold_warning,
+        "hold_blocked": hold_blocked,
+        "blocking_reasons": blocking_reasons,
+        "warning_reasons": warning_reasons,
+        "active_events": event_state.get("active_events", []),
     }
 
 

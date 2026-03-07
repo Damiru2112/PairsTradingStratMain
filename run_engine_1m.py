@@ -45,7 +45,8 @@ from portfolio import PaperPortfolio
 from strategy.live_trader import process_pair_barclose_fast
 from jp_market_time import sleep_for_next_bar, sleep_short
 from event_risk import (
-    compute_pair_event_state, refresh_event_data, init_event_tables,
+    compute_pair_event_state, resolve_event_trade_constraints,
+    refresh_event_data, init_event_tables,
     log_event_risk, Z_EXIT_CAP,
 )
 
@@ -521,21 +522,36 @@ class TradingEngine1m:
                 # --- EVENT RISK LAYER ---
                 import pytz
                 now_et = datetime.now(pytz.timezone('US/Eastern'))
+
+                # Layer 1: Raw event state
                 event_state = compute_pair_event_state(pair_name, now_et, self.con)
-                event_multiplier = event_state["multiplier"]
-                event_entry_blocked = event_state["entry_blocked"]
-                
+
+                # Layer 2: Direction-aware constraints
+                current_pos = None
+                if pair_name in self.portfolio.positions:
+                    pos = self.portfolio.positions[pair_name]
+                    current_pos = {"direction": pos.direction}
+
+                constraints = resolve_event_trade_constraints(
+                    pair_name, event_state,
+                    z_now=z_now,
+                    current_position=current_pos,
+                )
+
+                event_multiplier = constraints["effective_multiplier"]
+                event_entry_blocked = constraints["effective_entry_blocked"]
+
                 # Apply multiplier to thresholds
                 z_entry_thresh *= event_multiplier
                 z_exit_thresh = min(z_exit_thresh * event_multiplier, Z_EXIT_CAP)
-                
+
                 # Log event state when active
                 if event_multiplier > 1.0 or event_entry_blocked:
                     log_event_risk(
                         self.con, pair_name,
                         datetime.now(timezone.utc).isoformat(),
                         event_multiplier, event_entry_blocked,
-                        event_state["active_events"],
+                        constraints["active_events"],
                         z_entry_thresh, z_exit_thresh,
                     )
                 # --- END EVENT RISK LAYER ---
