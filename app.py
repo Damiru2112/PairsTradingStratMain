@@ -920,16 +920,22 @@ try:
 
     now_et = datetime.now(_ZI("America/New_York"))
 
-    # Build lookup maps for z_now and positions
+    # Build lookup maps for z_now and positions (these may not be defined yet)
     _z_lookup = {}
-    if not metrics.empty and "pair" in metrics.columns and "z" in metrics.columns:
-        for _, row in metrics.iterrows():
-            _z_lookup[row["pair"]] = row["z"]
+    try:
+        if not metrics.empty and "pair" in metrics.columns and "z" in metrics.columns:
+            for _, row in metrics.iterrows():
+                _z_lookup[row["pair"]] = row["z"]
+    except NameError:
+        pass
 
     _pos_lookup = {}
-    if not positions.empty and "pair" in positions.columns and "direction" in positions.columns:
-        for _, row in positions.iterrows():
-            _pos_lookup[row["pair"]] = {"direction": row["direction"]}
+    try:
+        if not positions.empty and "pair" in positions.columns and "direction" in positions.columns:
+            for _, row in positions.iterrows():
+                _pos_lookup[row["pair"]] = {"direction": row["direction"]}
+    except NameError:
+        pass
 
     # Collect event states for all enabled pairs
     event_states = {}
