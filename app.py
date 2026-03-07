@@ -1156,8 +1156,9 @@ try:
                 st.caption("No upcoming events in the next 10 trading days.")
 
 except Exception as e:
-    # Fail silently if event risk module not available
-    pass
+    st.error(f"Event Risk panel error: {e}")
+    import traceback
+    st.code(traceback.format_exc())
 
 # Detailed Engine Status (Collapsed by default if healthy)
 with st.expander("Engine Details", expanded=(sys_color!="green")):
