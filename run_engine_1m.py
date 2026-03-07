@@ -1071,7 +1071,7 @@ class TradingEngine1m:
             
             # Query DB
             # We need a db method for this. Or just raw sql.
-            start_of_day = now_ny.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+            start_of_day = now_ny.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00:00")
             
             # closed_trades has exit_time in ISO.
             query = "SELECT pnl FROM closed_trades WHERE exit_time >= ?"
