@@ -27,7 +27,7 @@ from typing import Dict, Optional, List, Set
 import pandas as pd
 
 # Local imports
-from db import connect_db, init_db, pulse_heartbeat, get_pair_params
+from db import connect_db, init_db, pulse_heartbeat, get_pair_params, save_equity_snapshot
 import db
 from persist import persist_state
 from data_polygon import (
@@ -140,6 +140,9 @@ class TradingEngine1m:
         
         # Event Risk tracking
         self._event_data_refreshed_today = False
+
+        # Equity curve: snapshot every 15 minutes
+        self._last_equity_snapshot_ts: Optional[datetime] = None
 
     def start(self):
         log.info(f"Starting 1-Minute Engine | ID: {self.engine_id}")
@@ -699,14 +702,32 @@ class TradingEngine1m:
                 new_closed = None
 
             persist_state(
-                self.con, 
-                metrics_df, 
-                self.portfolio, 
-                new_closed, 
+                self.con,
+                metrics_df,
+                self.portfolio,
+                new_closed,
                 self.engine_id,
                 positions_df=mtm_positions,
                 unrealized_pnl=unrealized_pnl
             )
+
+            # Equity curve snapshot (every 15 minutes)
+            now_utc = datetime.now(timezone.utc)
+            if (self._last_equity_snapshot_ts is None or
+                    (now_utc - self._last_equity_snapshot_ts).total_seconds() >= 900):
+                try:
+                    total_equity = self.portfolio.equity() + unrealized_pnl
+                    save_equity_snapshot(
+                        self.con,
+                        equity=total_equity,
+                        realized_pnl=self.portfolio.realized_pnl,
+                        unrealized_pnl=unrealized_pnl,
+                        open_positions=len(self.portfolio.positions)
+                    )
+                    self._last_equity_snapshot_ts = now_utc
+                    log.debug(f"Equity snapshot: ${total_equity:,.2f}")
+                except Exception as eq_err:
+                    log.warning(f"Equity snapshot failed: {eq_err}")
 
         except Exception as e:
             log.error(f"Persist failed: {e}")
@@ -1080,19 +1101,28 @@ class TradingEngine1m:
             # Best way: Query DB for trades closed today.
             
             # Determine "today" based on NY time
-            import pytz
-            ny_tz = pytz.timezone('US/Eastern')
+            from zoneinfo import ZoneInfo
+            ny_tz = ZoneInfo('America/New_York')
             now_ny = datetime.now(ny_tz)
             today_str = now_ny.strftime("%Y-%m-%d")
-            
-            # Query DB
-            # We need a db method for this. Or just raw sql.
-            start_of_day = now_ny.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S+00:00")
-            
-            # closed_trades has exit_time in ISO.
-            query = "SELECT pnl FROM closed_trades WHERE exit_time >= ?"
-            cursor = self.con.execute(query, (start_of_day,))
-            rows = cursor.fetchall()
+
+            # Query all closed trades and filter in Python to handle mixed
+            # timezone formats in exit_time (some -05:00, some +00:00).
+            # SQLite string comparison breaks on mixed offset formats.
+            start_of_day_utc = now_ny.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+            cursor = self.con.execute("SELECT pnl, exit_time FROM closed_trades")
+            rows = []
+            for pnl, exit_time_str in cursor.fetchall():
+                try:
+                    from dateutil import parser as dtparser
+                    exit_dt = dtparser.parse(exit_time_str)
+                    if exit_dt.tzinfo is None:
+                        exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+                    if exit_dt >= start_of_day_utc:
+                        rows.append((pnl,))
+                except Exception:
+                    continue
             
             daily_realized_pnl = sum([r[0] for r in rows]) if rows else 0.0
             num_trades = len(rows)

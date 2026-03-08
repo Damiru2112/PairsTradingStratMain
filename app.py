@@ -1084,8 +1084,16 @@ if alerts_count > 0:
 
 # System Badge details
 sys_issues = [i for i in raw_issues if i["type"] == "system" and i["severity"] == "red"]
-sys_color = "red" if sys_issues else "green" 
+sys_color = "red" if sys_issues else "green"
 # (UI Badge removed for space, but logic kept for expander below)
+
+# ----------------------------
+# DATA FETCHING (portfolio, positions, daily perf)
+# ----------------------------
+positions = db.get_open_positions(con)
+pnl_history = db.get_pnl_history(con, limit=1)
+pnl_summary = pnl_history.iloc[0] if not pnl_history.empty else None
+daily_df = db.get_daily_performance(con, limit=30)
 
 # ----------------------------
 # RENDER ENGINE HEALTH STRIP
@@ -1155,6 +1163,289 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
+# ----------------------------
+# PORTFOLIO SUMMARY
+# ----------------------------
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("Portfolio")
+    if pnl_summary is not None:
+        try:
+            equity = float(pnl_summary.get("equity", 100000))
+            realized = float(pnl_summary.get("realized_pnl", 0))
+            unrealized = float(pnl_summary.get("unrealized_pnl", 0))
+
+            allocated = 0.0
+            if not positions.empty:
+                for _, pos in positions.iterrows():
+                    try:
+                        q1 = float(pos.get("qty1", 0) or 0)
+                        q2 = float(pos.get("qty2", 0) or 0)
+                        p1 = float(pos.get("entry_price1", 0) or 0)
+                        p2 = float(pos.get("entry_price2", 0) or 0)
+                        allocated += (q1 * p1) + (q2 * p2)
+                    except:
+                        pass
+
+            available = equity - allocated
+
+            st.metric("Total Equity", f"${equity:,.2f}")
+            st.metric("Available Equity", f"${available:,.2f}",
+                      delta=f"-${allocated:,.0f} allocated" if allocated > 0 else None)
+
+            c1, c2 = st.columns(2)
+            c1.metric("Realized P&L", f"${realized:+,.2f}")
+            c2.metric("Unrealized P&L", f"${unrealized:+,.2f}")
+        except Exception as e:
+            st.error(f"Error parsing PnL: {e}")
+    else:
+        st.info("No PnL data available yet.")
+
+with col2:
+    st.subheader("Live Market (Snapshot)")
+    if not metrics.empty:
+        m = metrics.copy()
+        if "time" in m.columns:
+            try:
+                m["time"] = pd.to_datetime(m["time"], utc=True)
+                m["time"] = m["time"].dt.tz_convert('US/Eastern')
+            except Exception:
+                pass
+        m["z"] = pd.to_numeric(m["z"], errors='coerce')
+        m["abs_z"] = m["z"].abs()
+        m = m.sort_values("abs_z", ascending=False).drop(columns=["abs_z"])
+        st.dataframe(m, use_container_width=True, hide_index=True)
+    else:
+        st.info("Waiting for live metrics...")
+
+st.divider()
+
+# ----------------------------
+# DAILY PERFORMANCE
+# ----------------------------
+st.subheader("Daily Performance")
+
+if not daily_df.empty:
+    daily_df["date"] = pd.to_datetime(daily_df["date"])
+    daily_df = daily_df.sort_values("date")
+
+    d_chk1, d_chk2 = st.columns([2, 1])
+
+    with d_chk1:
+        fig_pnl = go.Figure()
+        colors = [BB_GREEN if v >= 0 else BB_RED for v in daily_df["realized_pnl"]]
+
+        # Equity line — use live equity_curve if available, else daily
+        equity_curve = db.get_equity_curve(con, days=30)
+        if not equity_curve.empty:
+            equity_curve["timestamp"] = pd.to_datetime(equity_curve["timestamp"], utc=True)
+            equity_curve = equity_curve.sort_values("timestamp")
+            fig_pnl.add_trace(go.Scatter(
+                x=equity_curve["timestamp"], y=equity_curve["equity"],
+                mode="lines", line=dict(color=BB_AMBER, width=1.5),
+                name="Equity (Live)", yaxis="y2",
+                hovertemplate="Equity: $%{y:,.2f}<br>%{x}<extra></extra>"
+            ))
+        else:
+            fig_pnl.add_trace(go.Scatter(
+                x=daily_df["date"], y=daily_df["total_equity"],
+                mode="lines+markers", line=dict(color=BB_AMBER, width=2),
+                marker=dict(size=4, color=BB_AMBER),
+                name="Equity", yaxis="y2",
+                hovertemplate="Equity: $%{y:,.2f}<extra></extra>"
+            ))
+
+        fig_pnl.add_trace(go.Bar(
+            x=daily_df["date"], y=daily_df["realized_pnl"],
+            marker_color=colors, marker_line=dict(color="#0b0f14", width=0.5),
+            name="Daily P&L", opacity=0.9,
+            hovertemplate="Date: %{x|%Y-%m-%d}<br>PnL: $%{y:,.2f}<extra></extra>"
+        ))
+
+        fig_pnl.update_layout(**bb_layout(
+            title="DAILY P&L & EQUITY", xaxis_title="Date",
+            yaxis=dict(title="Realized P&L", side="left", tickprefix="$", tickformat=",.2f"),
+            yaxis2=dict(title="Total Equity", overlaying="y", side="right", showgrid=False,
+                        tickfont=dict(size=10, color=BB_AMBER),
+                        title_font=dict(size=11, color=BB_AMBER),
+                        tickprefix="$", tickformat=",.0f"),
+            legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
+                        font=dict(size=10, color="#8899aa"), orientation="h", y=1.1),
+            height=350, bargap=0.3,
+        ))
+        st.plotly_chart(fig_pnl, use_container_width=True)
+
+    with d_chk2:
+        st.write("### Recent Days")
+        disp_daily = daily_df.sort_values("date", ascending=False).copy()
+        st.dataframe(
+            disp_daily,
+            column_order=["date", "realized_pnl", "num_trades", "total_equity"],
+            column_config={
+                "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                "realized_pnl": st.column_config.NumberColumn("P&L", format="$%.2f"),
+                "num_trades": st.column_config.NumberColumn("Trades"),
+                "total_equity": st.column_config.NumberColumn("Equity", format="$%.0f"),
+            },
+            hide_index=True, use_container_width=True
+        )
+
+    # Cumulative Stats (full width)
+    total_pnl = daily_df["realized_pnl"].sum()
+    total_trades = daily_df["num_trades"].sum()
+    win_rate = 0.0
+    if total_trades > 0:
+        total_wins = daily_df["wins"].sum()
+        win_rate = 100 * total_wins / total_trades
+
+    avg_hold_str = "N/A"
+    avg_pnl_per_trade = 0.0
+    try:
+        closed_df = pd.read_sql_query("SELECT entry_time, exit_time, pnl FROM closed_trades", con)
+        if not closed_df.empty:
+            avg_pnl_per_trade = closed_df["pnl"].mean()
+            closed_df["entry_time"] = pd.to_datetime(closed_df["entry_time"], format="mixed", utc=True)
+            closed_df["exit_time"] = pd.to_datetime(closed_df["exit_time"], format="mixed", utc=True)
+            valid = closed_df.dropna(subset=["entry_time", "exit_time"])
+            if not valid.empty:
+                avg_hold_td = (valid["exit_time"] - valid["entry_time"]).mean()
+                total_hours = avg_hold_td.total_seconds() / 3600
+                if total_hours >= 24:
+                    avg_hold_str = f"{total_hours / 24:.1f}d"
+                else:
+                    avg_hold_str = f"{total_hours:.1f}h"
+    except Exception:
+        pass
+
+    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+    col_m1.metric("Period P&L", f"${total_pnl:+,.2f}")
+    col_m2.metric("Total Trades", f"{total_trades}")
+    col_m3.metric("Win Rate", f"{win_rate:.1f}%")
+    col_m4.metric("Avg P&L / Trade", f"${avg_pnl_per_trade:+,.2f}")
+    col_m5.metric("Avg Hold Time", avg_hold_str)
+
+else:
+    st.info("No daily performance data recorded yet.")
+
+st.divider()
+
+# ----------------------------
+# OPEN POSITIONS
+# ----------------------------
+st.subheader("Open Positions")
+if not positions.empty:
+    if "entry_time" in positions.columns:
+        try:
+            positions["entry_time_utc"] = pd.to_datetime(positions["entry_time"], format='mixed', utc=True)
+            now_utc = datetime.now(timezone.utc)
+
+            def calc_duration(entry_time_utc):
+                if pd.isnull(entry_time_utc):
+                    return "N/A"
+                try:
+                    diff = now_utc - entry_time_utc
+                    total_seconds = int(diff.total_seconds())
+                    days = total_seconds // 86400
+                    hours = (total_seconds % 86400) // 3600
+                    minutes = (total_seconds % 3600) // 60
+                    if days > 0:
+                        return f"{days}d {hours}h"
+                    elif hours > 0:
+                        return f"{hours}h {minutes}m"
+                    else:
+                        return f"{minutes}m"
+                except Exception:
+                    return "Error"
+
+            positions["duration_str"] = positions["entry_time_utc"].apply(calc_duration)
+            positions["entry_time"] = positions["entry_time_utc"].dt.tz_convert('US/Eastern')
+            positions["entry_time_str"] = positions["entry_time"].dt.strftime('%Y-%m-%d %H:%M %Z')
+
+            if not metrics.empty:
+                metrics_drift = metrics[["pair", "beta_drift_pct"]].copy()
+                positions = pd.merge(positions, metrics_drift, on="pair", how="left")
+            else:
+                positions["beta_drift_pct"] = None
+
+            def calc_equity(row):
+                try:
+                    q1 = float(row.get("qty1", 0) or 0)
+                    q2 = float(row.get("qty2", 0) or 0)
+                    p1 = float(row.get("last_price1", 0) or 0)
+                    p2 = float(row.get("last_price2", 0) or 0)
+                    return abs(q1 * p1) + abs(q2 * p2)
+                except:
+                    return 0.0
+
+            positions["equity"] = positions.apply(calc_equity, axis=1)
+            positions["beta_drift_display"] = positions["beta_drift_pct"].apply(
+                lambda x: f"{abs(x):.1f}%" if pd.notnull(x) else "N/A"
+            )
+            if "beta_drift_limit" not in positions.columns:
+                positions["beta_drift_limit"] = 10.0
+            positions["beta_drift_limit"] = positions["beta_drift_limit"].fillna(10.0).astype(float)
+
+        except Exception as e:
+            positions["entry_time_str"] = str(e)
+            positions["duration_str"] = "Err"
+
+    display_cols = ["pair", "duration_str", "beta_drift_display", "equity", "pnl_unrealized", "entry_time_str", "beta_drift_limit"]
+    valid_cols = [c for c in display_cols if c in positions.columns]
+
+    edited_positions = st.data_editor(
+        positions[valid_cols], use_container_width=True, hide_index=True,
+        key="open_positions_editor",
+        column_config={
+            "pair": st.column_config.Column("Pair", disabled=True),
+            "duration_str": st.column_config.Column("Duration", disabled=True),
+            "beta_drift_display": st.column_config.Column("Drift %", disabled=True),
+            "equity": st.column_config.NumberColumn("Equity", format="$%.0f", disabled=True),
+            "pnl_unrealized": st.column_config.NumberColumn("Unrealized P&L", format="$%.2f", disabled=True),
+            "entry_time_str": st.column_config.TextColumn("Entry Time (NY)", disabled=True),
+            "beta_drift_limit": st.column_config.NumberColumn("Drift Limit %", min_value=1.0, max_value=100.0, step=0.5, format="%.1f%%", help="Close position if drift exceeds this %")
+        }
+    )
+
+    if not positions.empty:
+        merged_edits = pd.merge(positions[["pair", "beta_drift_limit"]],
+                               edited_positions[["pair", "beta_drift_limit"]],
+                               on="pair", suffixes=("_old", "_new"))
+        updates = []
+        for _, row in merged_edits.iterrows():
+            if abs(row["beta_drift_limit_old"] - row["beta_drift_limit_new"]) > 0.01:
+                updates.append({"pair": row["pair"], "beta_drift_limit": row["beta_drift_limit_new"]})
+        if updates:
+            try:
+                db.update_position_limits(con, updates)
+                st.toast(f"Updated limits for {len(updates)} position(s)!", icon="💾")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error("Failed to save limits: " + str(e))
+
+    st.divider()
+    st.markdown("### Manual Actions")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        pair_to_close = st.selectbox("Select Position to Close", options=positions["pair"].tolist(), key="manual_close_select")
+    with col2:
+        st.write("")
+        st.write("")
+        if st.button("Close Position", type="primary", use_container_width=True):
+            if pair_to_close:
+                try:
+                    db.add_manual_command(con, "CLOSE_POSITION", {"pair": pair_to_close})
+                    st.success(f"Close request sent for {pair_to_close}")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to send close request: {e}")
+
+else:
+    st.caption("No open positions.")
+
+st.divider()
 
 # ----------------------------
 # ALERTS & RISKS PANEL
@@ -1645,351 +1936,9 @@ with st.expander("Engine Details", expanded=(sys_color!="green")):
                     except:
                         pass
 
-# ----------------------------
-# DATA FETCHING
-# ----------------------------
-# 1. Snapshot Metrics (Z-scores)
-metrics = db.get_latest_snapshot(con)
-
-# 2. Open Positions
-positions = db.get_open_positions(con)
-
-# 3. PnL Summary
-pnl_history = db.get_pnl_history(con, limit=1)
-pnl_summary = pnl_history.iloc[0] if not pnl_history.empty else None
-
-# 4. Parameters
-params = db.get_pair_params(con)
-
-# 5. Daily Performance
-daily_df = db.get_daily_performance(con, limit=30)
-
-# ----------------------------
-# TOP SUMMARY (PNL & LIVE MARKET)
-# ----------------------------
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Portfolio")
-    if pnl_summary is not None:
-        try:
-            equity = float(pnl_summary.get("equity", 100000))
-            realized = float(pnl_summary.get("realized_pnl", 0))
-            unrealized = float(pnl_summary.get("unrealized_pnl", 0))
-            
-            # Calculate allocated capital from open positions
-            allocated = 0.0
-            if not positions.empty:
-                # Sum of (qty1 * price1 + qty2 * price2) for each position
-                for _, pos in positions.iterrows():
-                    try:
-                        q1 = float(pos.get("qty1", 0) or 0)
-                        q2 = float(pos.get("qty2", 0) or 0)
-                        p1 = float(pos.get("entry_price1", 0) or 0)
-                        p2 = float(pos.get("entry_price2", 0) or 0)
-                        allocated += (q1 * p1) + (q2 * p2)
-                    except:
-                        pass
-            
-            available = equity - allocated
-            
-            # Display metrics
-            st.metric("Total Equity", f"${equity:,.2f}")
-            st.metric("Available Equity", f"${available:,.2f}", 
-                      delta=f"-${allocated:,.0f} allocated" if allocated > 0 else None)
-            
-            c1, c2 = st.columns(2)
-            c1.metric("Realized P&L", f"${realized:+,.2f}")
-            c2.metric("Unrealized P&L", f"${unrealized:+,.2f}")
-        except Exception as e:
-            st.error(f"Error parsing PnL: {e}")
-    else:
-        st.info("No PnL data available yet.")
-
-with col2:
-    st.subheader("Live Market (Snapshot)")
-    if not metrics.empty:
-        # Sort by absolute Z-score descending to show most extreme pairs
-        m = metrics.copy()
-        
-        # Convert Time to NYC
-        if "time" in m.columns:
-            try:
-                # Ensure UTC
-                m["time"] = pd.to_datetime(m["time"], utc=True)
-                # Convert to US/Eastern
-                m["time"] = m["time"].dt.tz_convert('US/Eastern')
-            except Exception as e:
-                pass
-
-        m["z"] = pd.to_numeric(m["z"], errors='coerce')
-        m["abs_z"] = m["z"].abs()
-        m = m.sort_values("abs_z", ascending=False).drop(columns=["abs_z"])
-        st.dataframe(m, use_container_width=True, hide_index=True)
-    else:
-        st.info("Waiting for live metrics...")
 
 st.divider()
 
-# ----------------------------
-# OPEN POSITIONS (Full Width)
-# ----------------------------
-st.subheader("Open Positions")
-if not positions.empty:
-    # Select key columns for display
-    if "entry_time" in positions.columns:
-        try:
-            # 1. Parse to UTC datetime (Robust)
-            # Use format='mixed' to handle potential inconsistencies in string inputs
-            positions["entry_time_utc"] = pd.to_datetime(positions["entry_time"], format='mixed', utc=True)
-            
-            # 2. Calculate Holding Duration (UTC vs UTC)
-            now_utc = datetime.now(timezone.utc)
-            
-            def calc_duration(entry_time_utc):
-                if pd.isnull(entry_time_utc): 
-                    return "N/A"
-                try:
-                    # Both are UTC, so subtraction is safe
-                    diff = now_utc - entry_time_utc
-                    total_seconds = int(diff.total_seconds())
-                    
-                    days = total_seconds // 86400
-                    hours = (total_seconds % 86400) // 3600
-                    minutes = (total_seconds % 3600) // 60
-                    
-                    if days > 0:
-                        return f"{days}d {hours}h"
-                    elif hours > 0:
-                        return f"{hours}h {minutes}m"
-                    else:
-                        return f"{minutes}m"
-                except Exception:
-                    return "Error"
-
-            positions["duration_str"] = positions["entry_time_utc"].apply(calc_duration)
-
-            # 3. Convert to US/Eastern for Display
-            positions["entry_time"] = positions["entry_time_utc"].dt.tz_convert('US/Eastern')
-            
-            # Create Display String
-            positions["entry_time_str"] = positions["entry_time"].dt.strftime('%Y-%m-%d %H:%M %Z')
-
-            # Merge with metrics to get Beta Drift
-            if not metrics.empty:
-                metrics_drift = metrics[["pair", "beta_drift_pct"]].copy()
-                positions = pd.merge(positions, metrics_drift, on="pair", how="left")
-            else:
-                positions["beta_drift_pct"] = None
-
-            # Calculate Equity
-            def calc_equity(row):
-                try:
-                    q1 = float(row.get("qty1", 0) or 0)
-                    q2 = float(row.get("qty2", 0) or 0)
-                    p1 = float(row.get("last_price1", 0) or 0)
-                    p2 = float(row.get("last_price2", 0) or 0)
-                    return abs(q1 * p1) + abs(q2 * p2)
-                except:
-                    return 0.0
-
-            positions["equity"] = positions.apply(calc_equity, axis=1)
-
-            # Display Formatting
-            positions["beta_drift_display"] = positions["beta_drift_pct"].apply(
-                lambda x: f"{abs(x):.1f}%" if pd.notnull(x) else "N/A"
-            )
-            
-            # Ensure limit is float
-            if "beta_drift_limit" not in positions.columns:
-                positions["beta_drift_limit"] = 10.0
-            positions["beta_drift_limit"] = positions["beta_drift_limit"].fillna(10.0).astype(float)
-            
-        except Exception as e:
-            # Fallback if something critically fails (e.g. no entry_time column)
-            positions["entry_time_str"] = str(e)
-            positions["duration_str"] = "Err"
-    
-    display_cols = ["pair", "duration_str", "beta_drift_display", "equity", "pnl_unrealized", "entry_time_str", "beta_drift_limit"]
-    # Filter to columns that actually exist
-    valid_cols = [c for c in display_cols if c in positions.columns]
-    
-    # Use data_editor to allow editing limits
-    edited_positions = st.data_editor(
-        positions[valid_cols], 
-        use_container_width=True, 
-        hide_index=True,
-        key="open_positions_editor",
-        column_config={
-            "pair": st.column_config.Column("Pair", disabled=True),
-            "duration_str": st.column_config.Column("Duration", disabled=True),
-            "beta_drift_display": st.column_config.Column("Drift %", disabled=True),
-            "equity": st.column_config.NumberColumn("Equity", format="$%.0f", disabled=True),
-            "pnl_unrealized": st.column_config.NumberColumn("Unrealized P&L", format="$%.2f", disabled=True),
-            "entry_time_str": st.column_config.TextColumn("Entry Time (NY)", disabled=True),
-            "beta_drift_limit": st.column_config.NumberColumn("Drift Limit %", min_value=1.0, max_value=100.0, step=0.5, format="%.1f%%", help="Close position if drift exceeds this %")
-        }
-    )
-    
-    # Check for edits
-    if not positions.empty:
-        # Detect changes in beta_drift_limit
-        # We compare the edited dataframe with the original for the limit column
-        # Note: st.data_editor returns the full dataframe state
-        
-        # Identify rows where limit changed
-        # We need a stable index or ID. 'pair' is unique.
-        # Merge old and new on pair to compare
-        merged_edits = pd.merge(positions[["pair", "beta_drift_limit"]], 
-                               edited_positions[["pair", "beta_drift_limit"]], 
-                               on="pair", suffixes=("_old", "_new"))
-        
-        updates = []
-        for _, row in merged_edits.iterrows():
-            if abs(row["beta_drift_limit_old"] - row["beta_drift_limit_new"]) > 0.01:
-                updates.append({
-                    "pair": row["pair"],
-                    "beta_drift_limit": row["beta_drift_limit_new"]
-                })
-        
-        if updates:
-            try:
-                db.update_position_limits(con, updates)
-                st.toast(f"Updated limits for {len(updates)} position(s)!", icon="💾")
-                time.sleep(1) # Give time for toast
-                st.rerun()
-            except Exception as e:
-                st.error("Failed to save limits: " + str(e))
-
-    st.divider()
-    st.markdown("### Manual Actions")
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        pair_to_close = st.selectbox("Select Position to Close", options=positions["pair"].tolist(), key="manual_close_select")
-    with col2:
-        # Add some vertical spacing to align button
-        st.write("") 
-        st.write("")
-        if st.button("Close Position", type="primary", use_container_width=True):
-            if pair_to_close:
-                try:
-                    db.add_manual_command(con, "CLOSE_POSITION", {"pair": pair_to_close})
-                    st.success(f"Close request sent for {pair_to_close}")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to send close request: {e}")
-
-else:
-    st.caption("No open positions.")
-
-st.divider()
-
-# ----------------------------
-# DAILY PERFORMANCE
-# ----------------------------
-st.subheader("Daily Performance")
-
-if not daily_df.empty:
-    # Prepare data
-    daily_df["date"] = pd.to_datetime(daily_df["date"])
-    daily_df = daily_df.sort_values("date")
-    
-    # Layout: Chart + Table
-    d_chk1, d_chk2 = st.columns([2, 1])
-    
-    with d_chk1:
-        # PnL Bar Chart
-        fig_pnl = go.Figure()
-        
-        # Color bars based on PnL
-        colors = [BB_GREEN if v >= 0 else BB_RED for v in daily_df["realized_pnl"]]
-
-        # Equity line first (background, secondary axis)
-        fig_pnl.add_trace(go.Scatter(
-            x=daily_df["date"],
-            y=daily_df["total_equity"],
-            mode="lines+markers",
-            line=dict(color=BB_AMBER, width=2),
-            marker=dict(size=4, color=BB_AMBER),
-            name="Equity",
-            yaxis="y2",
-            hovertemplate="Equity: $%{y:,.2f}<extra></extra>"
-        ))
-
-        # P&L bars on top (primary axis)
-        fig_pnl.add_trace(go.Bar(
-            x=daily_df["date"],
-            y=daily_df["realized_pnl"],
-            marker_color=colors,
-            marker_line=dict(color="#0b0f14", width=0.5),
-            name="Daily P&L",
-            opacity=0.9,
-            hovertemplate="Date: %{x|%Y-%m-%d}<br>PnL: $%{y:,.2f}<extra></extra>"
-        ))
-
-        fig_pnl.update_layout(**bb_layout(
-            title="DAILY P&L & EQUITY",
-            xaxis_title="Date",
-            yaxis=dict(title="Realized P&L", side="left",
-                       tickprefix="$", tickformat=",.2f"),
-            yaxis2=dict(
-                title="Total Equity",
-                overlaying="y",
-                side="right",
-                showgrid=False,
-                tickfont=dict(size=10, color=BB_AMBER),
-                title_font=dict(size=11, color=BB_AMBER),
-                tickprefix="$", tickformat=",.0f",
-            ),
-            legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
-                        font=dict(size=10, color="#8899aa"),
-                        orientation="h", y=1.1),
-            height=350,
-            bargap=0.3,
-        ))
-        
-        st.plotly_chart(fig_pnl, use_container_width=True)
-        
-    with d_chk2:
-        st.write("### Recent Days")
-        # Format for table
-        disp_daily = daily_df.sort_values("date", ascending=False).copy()
-        
-        st.dataframe(
-            disp_daily,
-            column_order=["date", "realized_pnl", "num_trades", "total_equity"],
-            column_config={
-                "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
-                "realized_pnl": st.column_config.NumberColumn("P&L", format="$%.2f"),
-                "num_trades": st.column_config.NumberColumn("Trades"),
-                "total_equity": st.column_config.NumberColumn("Equity", format="$%.0f"),
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-        
-        # Cumulative Stats
-        total_pnl = daily_df["realized_pnl"].sum()
-        total_trades = daily_df["num_trades"].sum()
-        win_rate = 0.0
-        if total_trades > 0:
-            total_wins = daily_df["wins"].sum()
-            win_rate = 100 * total_wins / total_trades
-        
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Period P&L", f"${total_pnl:+,.2f}")
-        col_m2.metric("Total Trades", f"{total_trades}") 
-        col_m3.metric("Win Rate", f"{win_rate:.1f}%")
-
-else:
-    st.info("No daily performance data recorded yet. Data will appear after market close.")
-
-st.divider()
-
-# ----------------------------
-# CHARTS & HISTORY
-# ----------------------------
 st.subheader("Pair Analysis")
 
 # Pair Selector

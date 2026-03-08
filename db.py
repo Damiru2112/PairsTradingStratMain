@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 import pandas as pd
 
@@ -217,7 +217,22 @@ def init_db(con: sqlite3.Connection) -> None:
             );
         """)
 
-    # 12. Event Risk tables (earnings, dividends, macro, audit log)
+        # 12. Equity Curve (intraday snapshots for live equity tracking)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS equity_curve (
+                timestamp TEXT NOT NULL,
+                equity REAL NOT NULL,
+                realized_pnl REAL DEFAULT 0,
+                unrealized_pnl REAL DEFAULT 0,
+                open_positions INTEGER DEFAULT 0
+            );
+        """)
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_equity_curve_ts
+            ON equity_curve (timestamp);
+        """)
+
+    # 13. Event Risk tables (earnings, dividends, macro, audit log)
     from event_risk import init_event_tables
     init_event_tables(con)
 
@@ -604,3 +619,24 @@ def get_daily_performance(con: sqlite3.Connection, limit: int = 30) -> pd.DataFr
     Get daily performance stats for dashboard.
     """
     return pd.read_sql_query("SELECT * FROM daily_performance ORDER BY date DESC LIMIT ?", con, params=(limit,))
+
+
+def save_equity_snapshot(con: sqlite3.Connection, equity: float,
+                         realized_pnl: float = 0.0, unrealized_pnl: float = 0.0,
+                         open_positions: int = 0) -> None:
+    """Record a point on the equity curve."""
+    ts = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            INSERT INTO equity_curve (timestamp, equity, realized_pnl, unrealized_pnl, open_positions)
+            VALUES (?, ?, ?, ?, ?)
+        """, (ts, equity, realized_pnl, unrealized_pnl, open_positions))
+
+
+def get_equity_curve(con: sqlite3.Connection, days: int = 30) -> pd.DataFrame:
+    """Get equity curve snapshots for the last N days."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return pd.read_sql_query(
+        "SELECT * FROM equity_curve WHERE timestamp >= ? ORDER BY timestamp",
+        con, params=(cutoff,)
+    )
