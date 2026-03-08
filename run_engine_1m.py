@@ -143,6 +143,8 @@ class TradingEngine1m:
 
         # Equity curve: snapshot every 15 minutes
         self._last_equity_snapshot_ts: Optional[datetime] = None
+        # Track latest unrealized P&L for EOD MTM equity
+        self._last_unrealized_pnl: float = 0.0
 
     def start(self):
         log.info(f"Starting 1-Minute Engine | ID: {self.engine_id}")
@@ -261,6 +263,7 @@ class TradingEngine1m:
             mtm_positions = self.portfolio.open_positions_df()
             if not mtm_df.empty and "unrealized_pnl" in mtm_df.columns:
                 unrealized_pnl = mtm_df["unrealized_pnl"].sum()
+                self._last_unrealized_pnl = unrealized_pnl
                 if not mtm_positions.empty:
                     pnl_map = mtm_df.set_index("pair")
                     mtm_positions["pnl_unrealized"] = mtm_positions["pair"].map(pnl_map["unrealized_pnl"]).fillna(0.0)
@@ -665,6 +668,7 @@ class TradingEngine1m:
             unrealized_pnl = 0.0
             if not mtm_positions.empty and "unrealized_pnl" in mtm_positions.columns:
                 unrealized_pnl = mtm_positions["unrealized_pnl"].sum()
+                self._last_unrealized_pnl = unrealized_pnl
                 
                 # Add columns expected by DB if missing (mark_to_market returns specificcols)
                 # We need to ensure it has all fields for save_open_positions or we merge?
@@ -1133,14 +1137,14 @@ class TradingEngine1m:
             wins = sum(1 for r in rows if r[0] > 0)
             losses = sum(1 for r in rows if r[0] <= 0)
             
-            # 2. Total Equity
-            # realized_pnl + starting_equity ? 
-            # Or current portfolio equity (which should be all cash if positions closed)
-            # If we forced closed everything, equity is all realized.
+            # 2. Total Equity (realized only, for backwards compat)
             total_equity = self.portfolio.equity()
-            
+            # MTM equity = realized + unrealized (for Sharpe calculation)
+            total_equity_mtm = total_equity + self._last_unrealized_pnl
+
             # 3. Save to DB
-            db.save_daily_performance(self.con, today_str, daily_realized_pnl, total_equity, num_trades, wins, losses)
+            db.save_daily_performance(self.con, today_str, daily_realized_pnl, total_equity, num_trades, wins, losses,
+                                      total_equity_mtm=total_equity_mtm)
             
             self._pnl_recorded_today = True
             log.info(f"EOD Stats Saved: {today_str} | PnL: ${daily_realized_pnl:.2f} | Equity: ${total_equity:.2f}")

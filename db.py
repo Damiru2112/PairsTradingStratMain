@@ -225,6 +225,12 @@ def init_db(con: sqlite3.Connection) -> None:
             );
         """)
 
+        # Add MTM equity column (realized + unrealized, for Sharpe)
+        try:
+            con.execute("ALTER TABLE daily_performance ADD COLUMN total_equity_mtm REAL")
+        except Exception:
+            pass  # column already exists
+
         # 12. Equity Curve (intraday snapshots for live equity tracking)
         con.execute("""
             CREATE TABLE IF NOT EXISTS equity_curve (
@@ -608,18 +614,21 @@ def update_position_limits(con: sqlite3.Connection, updates: List[Dict[str, Any]
         """, updates)
 
 
-def save_daily_performance(con: sqlite3.Connection, date: str, realized_pnl: float, total_equity: float, num_trades: int, wins: int, losses: int) -> None:
+def save_daily_performance(con: sqlite3.Connection, date: str, realized_pnl: float, total_equity: float, num_trades: int, wins: int, losses: int, total_equity_mtm: float = None) -> None:
     """
     Upsert daily performance stats.
     date: YYYY-MM-DD
+    total_equity_mtm: mark-to-market equity (realized + unrealized), used for Sharpe.
     """
     updated_at = datetime.now(timezone.utc).isoformat()
+    if total_equity_mtm is None:
+        total_equity_mtm = total_equity  # fallback to realized-only
     with con:
         con.execute("""
-            INSERT OR REPLACE INTO daily_performance 
-            (date, realized_pnl, total_equity, num_trades, wins, losses, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (date, realized_pnl, total_equity, num_trades, wins, losses, updated_at))
+            INSERT OR REPLACE INTO daily_performance
+            (date, realized_pnl, total_equity, num_trades, wins, losses, updated_at, total_equity_mtm)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (date, realized_pnl, total_equity, num_trades, wins, losses, updated_at, total_equity_mtm))
 
 
 def get_daily_performance(con: sqlite3.Connection, limit: int = 30) -> pd.DataFrame:

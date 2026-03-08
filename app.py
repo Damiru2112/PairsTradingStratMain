@@ -1325,19 +1325,21 @@ if not daily_df.empty:
     except Exception:
         pass
 
-    # Sharpe Ratio from daily equity returns
+    # Sharpe Ratio from daily MTM equity returns (realized + unrealized)
     sharpe_str = "N/A"
     try:
         import numpy as np
         eq_sorted = daily_df.sort_values("date")
-        equities = eq_sorted["total_equity"].dropna()
-        if len(equities) >= 3:
-            daily_returns = equities.pct_change().dropna()
-            mean_ret = daily_returns.mean()
-            std_ret = daily_returns.std()  # sample std
-            if std_ret > 0:
-                sharpe = mean_ret / std_ret * np.sqrt(252)
-                sharpe_str = f"{sharpe:.2f}"
+        # Use MTM equity (includes unrealized) when available, else fall back
+        if "total_equity_mtm" in eq_sorted.columns:
+            mtm_series = eq_sorted["total_equity_mtm"].dropna()
+            if len(mtm_series) >= 3:
+                daily_returns = mtm_series.pct_change().dropna()
+                mean_ret = daily_returns.mean()
+                std_ret = daily_returns.std()
+                if std_ret > 0:
+                    sharpe = mean_ret / std_ret * np.sqrt(252)
+                    sharpe_str = f"{sharpe:.2f}"
     except Exception:
         pass
 
