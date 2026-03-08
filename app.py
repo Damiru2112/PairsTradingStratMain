@@ -1302,7 +1302,7 @@ if not daily_df.empty:
     avg_hold_str = "N/A"
     avg_pnl_per_trade = 0.0
     try:
-        closed_df = pd.read_sql_query("SELECT entry_time, exit_time, pnl FROM closed_trades", con)
+        closed_df = pd.read_sql_query("SELECT entry_time, exit_time, pnl, total_cost FROM closed_trades", con)
         if not closed_df.empty:
             avg_pnl_per_trade = closed_df["pnl"].mean()
             closed_df["entry_time"] = pd.to_datetime(closed_df["entry_time"], format="mixed", utc=True)
@@ -1318,12 +1318,20 @@ if not daily_df.empty:
     except Exception:
         pass
 
-    col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+    total_fees = 0.0
+    try:
+        if not closed_df.empty and "total_cost" in closed_df.columns:
+            total_fees = closed_df["total_cost"].fillna(0).sum()
+    except Exception:
+        pass
+
+    col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
     col_m1.metric("Period P&L", f"${total_pnl:+,.2f}")
     col_m2.metric("Total Trades", f"{total_trades}")
     col_m3.metric("Win Rate", f"{win_rate:.1f}%")
     col_m4.metric("Avg P&L / Trade", f"${avg_pnl_per_trade:+,.2f}")
     col_m5.metric("Avg Hold Time", avg_hold_str)
+    col_m6.metric("Total Fees", f"${total_fees:,.2f}")
 
 else:
     st.info("No daily performance data recorded yet.")

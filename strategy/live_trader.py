@@ -40,18 +40,17 @@ def _execute_exit(
     except:
         holding_minutes = 0
     
-    # Calculate PnL before exit
-    if pos.direction == "SHORT_SPREAD":
-        pnl = (pos.entry_price1 - p1) * pos.qty1 + (p2 - pos.entry_price2) * pos.qty2
-    else:
-        pnl = (p1 - pos.entry_price1) * pos.qty1 + (pos.entry_price2 - p2) * pos.qty2
-    
-    # Execute exit in portfolio
+    # Execute exit in portfolio (costs are deducted inside portfolio.exit)
     portfolio.exit(pair, exit_time=bar_ts, exit_price1=p1, exit_price2=p2, exit_z=z_now)
-    
+
+    # Read net pnl and cost breakdown from the just-closed trade
+    closed_trade = portfolio.closed[-1]
+    net_pnl = closed_trade.pnl
+    total_cost = closed_trade.total_cost
+
     timestamp_iso = bar_ts.isoformat() if hasattr(bar_ts, 'isoformat') else str(bar_ts)
     event_id = f"{pair}:EXIT:{timestamp_iso}:{pos.direction}"
-    
+
     return {
         "action": "EXIT",
         "event_id": event_id,
@@ -62,7 +61,8 @@ def _execute_exit(
         "price2": p2,
         "z": z_now,
         "direction": pos.direction,
-        "pnl": float(pnl),
+        "pnl": float(net_pnl),
+        "total_cost": float(total_cost),
         "entry_z": pos.entry_z,
         "timestamp": timestamp_iso,
         "holding_minutes": holding_minutes,

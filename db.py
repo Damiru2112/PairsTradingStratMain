@@ -161,6 +161,14 @@ def init_db(con: sqlite3.Connection) -> None:
             );
         """)
 
+        # Add cost columns to closed_trades (safe migration)
+        for col in ["commission REAL", "reg_fees REAL", "borrow_cost REAL",
+                     "slippage REAL", "total_cost REAL"]:
+            try:
+                con.execute(f"ALTER TABLE closed_trades ADD COLUMN {col}")
+            except Exception:
+                pass  # column already exists
+
         # 9. PnL Summary (Account level history)
         con.execute("""
             CREATE TABLE IF NOT EXISTS pnl_summary (

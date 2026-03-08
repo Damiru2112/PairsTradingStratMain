@@ -73,9 +73,16 @@ def persist_state(
                     str(row.get("entry_time")),
                     str(row.get("exit_time")),
                     float(row.get("pnl", 0.0)),
-                    json.dumps(row.to_dict(), default=str)
+                    json.dumps(row.to_dict(), default=str),
+                    float(row.get("commission", 0.0)),
+                    float(row.get("reg_fees", 0.0)),
+                    float(row.get("borrow_cost", 0.0)),
+                    float(row.get("slippage", 0.0)),
+                    float(row.get("total_cost", 0.0)),
                 ))
             con.executemany("""
-                INSERT INTO closed_trades (pair, direction, entry_time, exit_time, pnl, meta_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO closed_trades
+                (pair, direction, entry_time, exit_time, pnl, meta_json,
+                 commission, reg_fees, borrow_cost, slippage, total_cost)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, records)
