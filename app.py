@@ -299,18 +299,18 @@ def calculate_verdict(mkt, issues, candidates_count) -> tuple[str, str, str]:
     red_issues = [i for i in issues if i["severity"] == "red"]
     
     if red_issues:
-        return "⚠️ ATTENTION REQUIRED", "white", "#d32f2f" # Red
+        return f"{len(red_issues)} ISSUES DETECTED", "white", "#d32f2f" # Red
 
     # 2. TRADE CANDIDATES
     # Conditions: Market Open, No Red Issues, Candidates > 0
     # Note: Explicit check for Data Stale is handled by Red Issues list now
-    if mkt["is_open"]: 
+    if mkt["is_open"]:
         if candidates_count > 0:
             return f"{candidates_count} TRADE CANDIDATES", "white", "#2e7d32" # Green
-    
-    # 3. NO TRADE CONDITIONS
+
+    # 3. ALL SYSTEMS NOMINAL
     # Default fallback
-    return "NO TRADE CONDITIONS", "white", "#424242" # Grey
+    return "ALL SYSTEMS NOMINAL", "white", "#424242" # Grey
 
 
 def detect_entry_signals(history_df: pd.DataFrame, z_entry: float) -> list:
@@ -691,46 +691,69 @@ sys_color = "red" if sys_issues else "green"
 # (UI Badge removed for space, but logic kept for expander below)
 
 # ----------------------------
-# RENDER DECISION STRIP
+# RENDER ENGINE HEALTH STRIP
 # ----------------------------
 st.markdown(f"""
     <style>
-    .decision-strip {{
+    .engine-header {{
         background-color: {verdict_bg_color};
         color: {verdict_text_color};
-        padding: 15px;
-        text-align: center;
-        border-radius: 5px;
-        margin-bottom: 10px;
+        padding: 18px 24px;
+        border-radius: 8px;
+        margin-bottom: 12px;
         font-family: sans-serif;
     }}
-    .decision-title {{
-        font-size: 28px;
-        font-weight: bold;
+    .engine-top-row {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }}
+    .engine-title {{
+        font-size: 14px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        opacity: 0.85;
         margin: 0;
     }}
-    .badge-container {{
-        display: flex;
-        justify-content: center;
-        gap: 15px;
-        margin-top: 10px;
+    .engine-verdict {{
+        font-size: 22px;
+        font-weight: 700;
+        margin: 0;
     }}
-    .status-badge {{
-        background-color: rgba(0,0,0,0.2);
-        padding: 4px 10px;
-        border-radius: 4px;
-        font-size: 14px;
+    .engine-badges {{
+        display: flex;
+        gap: 12px;
+        margin-top: 12px;
+    }}
+    .engine-badge {{
+        background-color: rgba(255,255,255,0.12);
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 13px;
         font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }}
+    .badge-dot {{
+        width: 8px;
+        height: 8px;
+        border-radius: 50%%;
+        display: inline-block;
     }}
     </style>
-    
-    <div class="decision-strip">
-        <div class="decision-title">{verdict_title}</div>
-        <div class="badge-container">
-            <span class="status-badge" style="border-left: 4px solid {mkt['color']}">Market: {mkt['text']}</span>
-            <span class="status-badge" style="border-left: 4px solid {data_color}">Data: {data_status}</span>
-            <span class="status-badge" style="border-left: 4px solid {risk_color}">{risk_label}</span>
-            <span class="status-badge" style="border-left: 4px solid {alerts_color}">Alerts: {alerts_status}</span>
+
+    <div class="engine-header">
+        <div class="engine-top-row">
+            <p class="engine-title">Engine Health</p>
+            <p class="engine-verdict">{verdict_title}</p>
+        </div>
+        <div class="engine-badges">
+            <span class="engine-badge"><span class="badge-dot" style="background-color:{mkt['color']}"></span> Market: {mkt['text']}</span>
+            <span class="engine-badge"><span class="badge-dot" style="background-color:{data_color}"></span> Data: {data_status}</span>
+            <span class="engine-badge"><span class="badge-dot" style="background-color:{risk_color}"></span> {risk_label}</span>
+            <span class="engine-badge"><span class="badge-dot" style="background-color:{alerts_color}"></span> Alerts: {alerts_status}</span>
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -740,7 +763,7 @@ st.markdown(f"""
 # ALERTS & RISKS PANEL
 # ----------------------------
 # Auto-expand if Attention Required or if issues exist
-panel_expanded = (verdict_title == "⚠️ ATTENTION REQUIRED") or (len(raw_issues) > 0)
+panel_expanded = ("ISSUES DETECTED" in verdict_title) or (len(raw_issues) > 0)
 
 if raw_issues:
     with st.expander(f"🚨 Alerts & Risks ({len(raw_issues)})", expanded=panel_expanded):
@@ -769,13 +792,13 @@ if raw_issues:
             # filter to available
             disp_cols = [c for c in disp_cols if c in df_issues.columns]
             
-            # Styling definitions
+            # Styling definitions (light-mode friendly)
             def highlight_severity(row):
                 severity = row.get("severity", "info")
                 if severity == "red":
-                    return ['background-color: #5a2525'] * len(row) # Dark Red background
+                    return ['background-color: #fce4e4; color: #8b1a1a'] * len(row)
                 elif severity == "amber":
-                    return ['background-color: #5a4525'] * len(row) # Dark Amber background
+                    return ['background-color: #fff3e0; color: #7a4a00'] * len(row)
                 return [''] * len(row)
 
             # Apply style
@@ -824,7 +847,7 @@ if trade_candidates.empty:
     st.info("No pairs near entry thresholds right now.")
 else:
     # Smart filter default: "Blocked only" when ATTENTION REQUIRED, else "All"
-    default_filter = "Blocked only" if verdict_title == "⚠️ ATTENTION REQUIRED" else "All"
+    default_filter = "Blocked only" if "ISSUES DETECTED" in verdict_title else "All"
     filter_options = ["All", "Valid only", "Blocked only"]
     
     # Use session state to persist filter choice
