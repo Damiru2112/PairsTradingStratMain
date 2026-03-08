@@ -1905,16 +1905,7 @@ if not daily_df.empty:
         # Color bars based on PnL
         colors = [BB_GREEN if v >= 0 else BB_RED for v in daily_df["realized_pnl"]]
 
-        fig_pnl.add_trace(go.Bar(
-            x=daily_df["date"],
-            y=daily_df["realized_pnl"],
-            marker_color=colors,
-            marker_line=dict(color="#0b0f14", width=0.5),
-            name="Daily P&L",
-            hovertemplate="Date: %{x|%Y-%m-%d}<br>PnL: $%{y:,.2f}<extra></extra>"
-        ))
-
-        # Add Equity Line (Secondary Axis)
+        # Equity line first (background, secondary axis)
         fig_pnl.add_trace(go.Scatter(
             x=daily_df["date"],
             y=daily_df["total_equity"],
@@ -1926,10 +1917,22 @@ if not daily_df.empty:
             hovertemplate="Equity: $%{y:,.2f}<extra></extra>"
         ))
 
+        # P&L bars on top (primary axis)
+        fig_pnl.add_trace(go.Bar(
+            x=daily_df["date"],
+            y=daily_df["realized_pnl"],
+            marker_color=colors,
+            marker_line=dict(color="#0b0f14", width=0.5),
+            name="Daily P&L",
+            opacity=0.9,
+            hovertemplate="Date: %{x|%Y-%m-%d}<br>PnL: $%{y:,.2f}<extra></extra>"
+        ))
+
         fig_pnl.update_layout(**bb_layout(
             title="DAILY P&L & EQUITY",
             xaxis_title="Date",
-            yaxis_title="Realized P&L",
+            yaxis=dict(title="Realized P&L", side="left",
+                       tickprefix="$", tickformat=",.2f"),
             yaxis2=dict(
                 title="Total Equity",
                 overlaying="y",
@@ -1937,11 +1940,13 @@ if not daily_df.empty:
                 showgrid=False,
                 tickfont=dict(size=10, color=BB_AMBER),
                 title_font=dict(size=11, color=BB_AMBER),
+                tickprefix="$", tickformat=",.0f",
             ),
             legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
                         font=dict(size=10, color="#8899aa"),
                         orientation="h", y=1.1),
             height=350,
+            bargap=0.3,
         ))
         
         st.plotly_chart(fig_pnl, use_container_width=True)
