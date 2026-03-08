@@ -1939,6 +1939,83 @@ with st.expander("Engine Details", expanded=(sys_color!="green")):
 
 st.divider()
 
+# ----------------------------
+# PARAMETER EDITOR (above Pair Analysis)
+# ----------------------------
+st.subheader("Configuration (Pair Parameters)")
+if params.empty:
+    st.warning("No parameters found. Please run seed script or engine init.")
+else:
+    # Prepare for editor
+    p_edit = params.copy()
+    # Ensure enabled is bool for checkbox
+    if "enabled" in p_edit.columns:
+        p_edit["enabled"] = p_edit["enabled"].astype(int).astype(bool)
+
+    edited_df = st.data_editor(
+        p_edit.sort_values("pair"),
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        column_config={
+            "enabled": st.column_config.CheckboxColumn("Enabled", help="Toggle trading for this pair"),
+            "max_drift_pct": st.column_config.NumberColumn("Beta Drift (%)", help="Max allowed % deviation from entry Beta"),
+            "max_drift_delta": st.column_config.NumberColumn("Delta Drift ($)", help="Max allowed $ deviation (unhedged exposure)")
+        }
+    )
+
+    if st.button("Save Changes"):
+        try:
+            # Convert back to int for DB
+            to_save = edited_df.copy()
+            to_save["enabled"] = to_save["enabled"].astype(int)
+
+            db.upsert_pair_params(con, to_save)
+            con.commit()  # Explicit commit to ensure WAL is flushed
+            st.success("Configuration saved! Reloading...")
+            time.sleep(0.5)  # Brief visual feedback
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to save settings: {e}")
+
+# ----------------------------
+# Bulk Update Section
+# ----------------------------
+st.divider()
+st.subheader("Bulk Parameter Update")
+st.info("Update a specific parameter for **ALL enabled pairs** at once.")
+
+with st.form("bulk_update_form"):
+    col_b1, col_b2, col_b3 = st.columns(3)
+
+    with col_b1:
+        # Only allow bulk update for numeric risk params
+        bulk_param = st.selectbox(
+            "Parameter",
+            ["z_entry", "z_exit", "max_drift_pct", "max_drift_delta", "alloc_pct"]
+        )
+
+    with col_b2:
+        bulk_val = st.number_input("New Value", value=0.0, step=0.1, format="%.2f")
+
+    with col_b3:
+        st.write("") # Spacer
+        st.write("") # Spacer
+        bulk_submit = st.form_submit_button("Apply to All Enabled Pairs")
+
+    if bulk_submit:
+        try:
+            with con:
+                con.execute(f"UPDATE pair_params SET {bulk_param} = ? WHERE enabled = 1", (bulk_val,))
+                con.commit()
+            st.success(f"Updated {bulk_param} to {bulk_val} for all enabled pairs!")
+            time.sleep(1.0)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Bulk update failed: {e}")
+
+st.divider()
+
 st.subheader("Pair Analysis")
 
 # Pair Selector
@@ -2417,83 +2494,6 @@ if selected_pair:
     else:
         st.info("Not enough history for long-term view.")
 
-
-st.divider()
-
-# ----------------------------
-# PARAMETER EDITOR
-# ----------------------------
-with st.expander("⚙️ Configuration (Pair Parameters)"):
-    if params.empty:
-        st.warning("No parameters found. Please run seed script or engine init.")
-    else:
-        # Prepare for editor
-        p_edit = params.copy()
-        # Ensure enabled is bool for checkbox
-        if "enabled" in p_edit.columns:
-            p_edit["enabled"] = p_edit["enabled"].astype(int).astype(bool)
-            
-        edited_df = st.data_editor(
-            p_edit.sort_values("pair"), 
-            use_container_width=True,
-            hide_index=True,
-            num_rows="dynamic",
-            column_config={
-                "enabled": st.column_config.CheckboxColumn("Enabled", help="Toggle trading for this pair"),
-                "max_drift_pct": st.column_config.NumberColumn("Beta Drift (%)", help="Max allowed % deviation from entry Beta"),
-                "max_drift_delta": st.column_config.NumberColumn("Delta Drift ($)", help="Max allowed $ deviation (unhedged exposure)")
-            }
-        )
-        
-        if st.button("Save Changes"):
-            try:
-                # Convert back to int for DB
-                to_save = edited_df.copy()
-                to_save["enabled"] = to_save["enabled"].astype(int)
-                
-                db.upsert_pair_params(con, to_save)
-                con.commit()  # Explicit commit to ensure WAL is flushed
-                st.success("Configuration saved! Reloading...")
-                time.sleep(0.5)  # Brief visual feedback
-                st.rerun()
-            except Exception as e:
-                st.error(f"Failed to save settings: {e}")
-
-    # ----------------------------
-    # Bulk Update Section
-    # ----------------------------
-    st.divider()
-    st.subheader("Bulk Parameter Update")
-    st.info("Update a specific parameter for **ALL enabled pairs** at once.")
-    
-    with st.form("bulk_update_form"):
-        col_b1, col_b2, col_b3 = st.columns(3)
-        
-        with col_b1:
-            # Only allow bulk update for numeric risk params
-            bulk_param = st.selectbox(
-                "Parameter", 
-                ["z_entry", "z_exit", "max_drift_pct", "max_drift_delta", "alloc_pct"]
-            )
-            
-        with col_b2:
-            bulk_val = st.number_input("New Value", value=0.0, step=0.1, format="%.2f")
-            
-        with col_b3:
-            st.write("") # Spacer
-            st.write("") # Spacer
-            bulk_submit = st.form_submit_button("Apply to All Enabled Pairs")
-            
-        if bulk_submit:
-            try:
-                with con:
-                    con.execute(f"UPDATE pair_params SET {bulk_param} = ? WHERE enabled = 1", (bulk_val,))
-                    con.commit()
-                st.success(f"Updated {bulk_param} to {bulk_val} for all enabled pairs!")
-                time.sleep(1.0)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Bulk update failed: {e}")
 
 # Close DB connection at end of script run (Streamlit runs script top-to-bottom)
 # Note: In production Streamlit, caching connection resource is better, 
