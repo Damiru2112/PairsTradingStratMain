@@ -778,14 +778,15 @@ class TradingEngine1m:
             )
         elif action.get("action") == "EXIT":
             pnl = action.get("pnl", 0)
+            total_cost = action.get("total_cost", 0)
             emoji = "🟢" if pnl >= 0 else "🔴"
             holding = action.get("holding_minutes", 0)
             holding_str = f"{holding // 60}h {holding % 60}m" if holding >= 60 else f"{holding}m"
             exit_reason = action.get("exit_reason", "unknown").replace("_", " ").title()
-            
+
             msg = (
                 f"{emoji} <b>EXIT: {action['pair']}</b>\n"
-                f"P&L: <b>${pnl:+,.2f}</b>\n"
+                f"P&L: <b>${pnl:+,.2f}</b> (fees: ${total_cost:,.2f})\n"
                 f"Reason: {exit_reason}\n"
                 f"Entry Z: {action.get('entry_z', 0):.2f} → Exit Z: {action['z']:.2f}\n"
                 f"Held: {holding_str}\n"
@@ -1111,20 +1112,23 @@ class TradingEngine1m:
             # SQLite string comparison breaks on mixed offset formats.
             start_of_day_utc = now_ny.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
-            cursor = self.con.execute("SELECT pnl, exit_time FROM closed_trades")
+            cursor = self.con.execute("SELECT pnl, exit_time, total_cost FROM closed_trades")
             rows = []
-            for pnl, exit_time_str in cursor.fetchall():
+            for row_data in cursor.fetchall():
+                pnl_val, exit_time_str = row_data[0], row_data[1]
+                cost_val = row_data[2] if len(row_data) > 2 else 0.0
                 try:
                     from dateutil import parser as dtparser
                     exit_dt = dtparser.parse(exit_time_str)
                     if exit_dt.tzinfo is None:
                         exit_dt = exit_dt.replace(tzinfo=timezone.utc)
                     if exit_dt >= start_of_day_utc:
-                        rows.append((pnl,))
+                        rows.append((pnl_val, cost_val or 0.0))
                 except Exception:
                     continue
-            
-            daily_realized_pnl = sum([r[0] for r in rows]) if rows else 0.0
+
+            daily_realized_pnl = sum(r[0] for r in rows) if rows else 0.0
+            daily_total_fees = sum(r[1] for r in rows) if rows else 0.0
             num_trades = len(rows)
             wins = sum(1 for r in rows if r[0] > 0)
             losses = sum(1 for r in rows if r[0] <= 0)
@@ -1143,6 +1147,7 @@ class TradingEngine1m:
             notifier.notify(
                 f"📊 <b>Daily Report ({today_str})</b>\n"
                 f"Realized P&L: <b>${daily_realized_pnl:+,.2f}</b>\n"
+                f"Fees Paid: ${daily_total_fees:,.2f}\n"
                 f"Total Equity: <b>${total_equity:,.2f}</b>\n"
                 f"Trades: {num_trades} (W:{wins} L:{losses})"
             )
