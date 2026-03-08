@@ -59,6 +59,17 @@ BB_GREY = "#5a6a7a"
 BB_LIGHT = "#c8cdd3"
 BB_DIM = "#2a3a4a"
 
+def bb_layout(**overrides):
+    """Merge BLOOMBERG_LAYOUT with overrides (deep-merge for nested dicts)."""
+    import copy
+    layout = copy.deepcopy(BLOOMBERG_LAYOUT)
+    for k, v in overrides.items():
+        if k in layout and isinstance(layout[k], dict) and isinstance(v, dict):
+            layout[k].update(v)
+        else:
+            layout[k] = v
+    return layout
+
 # ----------------------------
 # PAGE CONFIG
 # ----------------------------
@@ -286,6 +297,23 @@ p, [data-testid="stText"], [data-testid="stMarkdown"] p {
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+}
+/* Fix expander arrow icon overlapping text */
+[data-testid="stExpander"] summary svg,
+[data-testid="stExpander"] summary [data-testid="stExpanderToggleIcon"] {
+    flex-shrink: 0;
+    min-width: 20px;
+    color: #ff9800;
+}
+[data-testid="stExpander"] summary span,
+[data-testid="stExpander"] summary p {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 [data-testid="stExpander"] details {
     border-color: #1a2332 !important;
@@ -744,7 +772,7 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
     # Use data-based 'now' to avoid timezone issues
     if history.empty or "time" not in history.columns or "z" not in history.columns:
         fig = go.Figure()
-        fig.update_layout(**BLOOMBERG_LAYOUT)
+        fig.update_layout(**bb_layout())
         fig.add_annotation(text="NO DATA AVAILABLE", xref="paper", yref="paper",
                           x=0.5, y=0.5, showarrow=False,
                           font=dict(size=13, color=BB_GREY, family="IBM Plex Mono, monospace"))
@@ -765,7 +793,7 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
     # Guard: insufficient data - return empty figure with message
     if len(z10) < 20:
         fig = go.Figure()
-        fig.update_layout(**BLOOMBERG_LAYOUT)
+        fig.update_layout(**bb_layout())
         fig.add_annotation(text="INSUFFICIENT HISTORY FOR HISTOGRAM", xref="paper", yref="paper",
                           x=0.5, y=0.5, showarrow=False,
                           font=dict(size=12, color=BB_AMBER, family="IBM Plex Mono, monospace"))
@@ -825,16 +853,17 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
                       annotation_font_color=BB_RED)
     
     # Layout
-    fig.update_layout(
-        **BLOOMBERG_LAYOUT,
+    fig.update_layout(**bb_layout(
         barmode="overlay",
         title=None,
         xaxis_title="Z-Score",
         yaxis_title="Density",
-        legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
+                    font=dict(size=10, color="#8899aa"),
+                    orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
         margin=dict(t=20, b=50, l=50, r=20),
         height=300
-    )
+    ))
     
     return fig
 
@@ -1897,8 +1926,7 @@ if not daily_df.empty:
             hovertemplate="Equity: $%{y:,.2f}<extra></extra>"
         ))
 
-        fig_pnl.update_layout(
-            **BLOOMBERG_LAYOUT,
+        fig_pnl.update_layout(**bb_layout(
             title="DAILY P&L & EQUITY",
             xaxis_title="Date",
             yaxis_title="Realized P&L",
@@ -1910,9 +1938,11 @@ if not daily_df.empty:
                 tickfont=dict(size=10, color=BB_AMBER),
                 title_font=dict(size=11, color=BB_AMBER),
             ),
-            legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", y=1.1),
+            legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
+                        font=dict(size=10, color="#8899aa"),
+                        orientation="h", y=1.1),
             height=350,
-        )
+        ))
         
         st.plotly_chart(fig_pnl, use_container_width=True)
         
@@ -2217,16 +2247,17 @@ if selected_pair:
                     )
                 
                 # Layout
-                fig.update_layout(
-                    **BLOOMBERG_LAYOUT,
+                fig.update_layout(**bb_layout(
                     title="Z-SCORE HISTORY (75 DAYS)",
                     xaxis_title="",
                     yaxis_title="Z-Score",
-                    yaxis=dict(**BLOOMBERG_LAYOUT["yaxis"], range=[y_min, y_max]),
-                    xaxis=dict(**BLOOMBERG_LAYOUT["xaxis"], tickangle=-45),
-                    legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+                    yaxis=dict(range=[y_min, y_max]),
+                    xaxis=dict(tickangle=-45),
+                    legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
+                                font=dict(size=10, color="#8899aa"),
+                                orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
                     margin=dict(t=35, b=50, l=50, r=100),
-                )
+                ))
                 
                 st.plotly_chart(fig, use_container_width=True, 
                                 config={'edits': {'annotationPosition': True}})
@@ -2315,13 +2346,14 @@ if selected_pair:
                                         name="Persistence ✓", hovertemplate="PASSED<extra></extra>"
                                     ))
 
-                                fig_compare.update_layout(
-                                    **BLOOMBERG_LAYOUT,
+                                fig_compare.update_layout(**bb_layout(
                                     title="1-MIN vs 15-MIN Z-SCORE",
                                     xaxis_title="Time", yaxis_title="Z-Score",
-                                    legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", y=-0.15),
+                                    legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
+                                                font=dict(size=10, color="#8899aa"),
+                                                orientation="h", y=-0.15),
                                     height=350
-                                )
+                                ))
                             
                                 st.plotly_chart(fig_compare, use_container_width=True)
                             
@@ -2344,7 +2376,7 @@ if selected_pair:
                 fig_beta = px.line(history, x="time", y=["direct_beta", "beta_30_weekly"],
                                  title="DIRECT vs 30D BETA", color_discrete_sequence=[BB_CYAN, BB_AMBER])
 
-                fig_beta.update_layout(**BLOOMBERG_LAYOUT)
+                fig_beta.update_layout(**bb_layout())
                 fig_beta.update_xaxes(tickangle=-45)
 
                 for dt in day_change_times:
@@ -2418,7 +2450,7 @@ if selected_pair:
         fig_beta_long = px.line(history_long, x="time", y=["direct_beta", "beta_30_weekly"],
                           title="DIRECT vs 30D BETA (30 DAY VIEW)", color_discrete_sequence=[BB_CYAN, BB_AMBER])
 
-        fig_beta_long.update_layout(**BLOOMBERG_LAYOUT)
+        fig_beta_long.update_layout(**bb_layout())
         # Sparse ticks for long view
         fig_beta_long.update_xaxes(tickangle=-45, nticks=20)
 
