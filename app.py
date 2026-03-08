@@ -18,8 +18,240 @@ import db
 # ----------------------------
 # PAGE CONFIG
 # ----------------------------
-st.set_page_config(page_title="Pairs Trading Dashboard", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Pairs Trading Dashboard", layout="wide", page_icon="📈",
+                   initial_sidebar_state="collapsed")
 st_autorefresh(interval=15_000, key="auto_refresh")  # 15s refresh
+
+# ----------------------------
+# BLOOMBERG TERMINAL CSS
+# ----------------------------
+st.markdown("""
+<style>
+/* ── Hide Streamlit Chrome ── */
+#MainMenu, footer, header { visibility: hidden; }
+
+/* ── Dark Terminal Background ── */
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+.stApp {
+    background-color: #0b0f14;
+    color: #e0e0e0;
+}
+
+/* ── Compact Layout ── */
+.block-container {
+    padding-top: 1rem;
+    padding-bottom: 0;
+    max-width: 100%;
+}
+
+/* ── Metric Cards — Boxed Panels ── */
+[data-testid="stMetric"] {
+    background: #111820;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+    padding: 12px 16px;
+}
+[data-testid="stMetricValue"] {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
+    color: #e0e0e0;
+}
+[data-testid="stMetricLabel"] {
+    color: #8899aa;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* ── Subheaders — Bloomberg Amber ── */
+h2, h3, [data-testid="stSubheader"] {
+    color: #ff9800 !important;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-size: 14px !important;
+    font-weight: 600;
+    border-bottom: 1px solid #1a2332;
+    padding-bottom: 6px;
+    margin-top: 1rem;
+}
+
+/* ── Tables — Market Monitor Grid ── */
+[data-testid="stDataFrame"] {
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+}
+[data-testid="stDataFrame"] table {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+}
+[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
+    background: #111820;
+}
+
+/* ── Tabs — Terminal Style ── */
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    background: #111820;
+    border-bottom: 1px solid #1a2332;
+    gap: 0;
+}
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    background: transparent;
+    color: #8899aa;
+    border-radius: 0;
+    border-bottom: 2px solid transparent;
+    padding: 8px 20px;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 1px;
+}
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: #ff9800 !important;
+    border-bottom-color: #ff9800 !important;
+    background: rgba(255, 152, 0, 0.05);
+}
+
+/* ── Buttons — Terminal Controls ── */
+.stButton > button {
+    background: #111820;
+    color: #e0e0e0;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    text-transform: uppercase;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+}
+.stButton > button:hover {
+    border-color: #ff9800;
+    color: #ff9800;
+    background: #111820;
+}
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="stBaseButton-primary"] {
+    background: #ff9800;
+    color: #0b0f14;
+    border-color: #ff9800;
+    font-weight: 700;
+}
+.stButton > button[kind="primary"]:hover,
+.stButton > button[data-testid="stBaseButton-primary"]:hover {
+    background: #ffb74d;
+    color: #0b0f14;
+}
+
+/* ── Inputs / Selects ── */
+[data-testid="stSelectbox"],
+[data-testid="stNumberInput"],
+[data-testid="stTextInput"] {
+    font-family: 'JetBrains Mono', monospace;
+}
+[data-baseweb="select"] > div {
+    background: #111820 !important;
+    border-color: #1a2332 !important;
+    color: #e0e0e0;
+}
+[data-baseweb="input"] > div {
+    background: #111820 !important;
+    border-color: #1a2332 !important;
+}
+[data-baseweb="popover"] > div {
+    background: #111820 !important;
+    border: 1px solid #1a2332;
+}
+[data-baseweb="menu"] {
+    background: #111820 !important;
+}
+[data-baseweb="menu"] li {
+    color: #e0e0e0;
+}
+[data-baseweb="menu"] li:hover {
+    background: #1a2332 !important;
+}
+
+/* ── Dividers ── */
+[data-testid="stDivider"], hr {
+    border-color: #1a2332 !important;
+}
+
+/* ── Expanders ── */
+[data-testid="stExpander"] {
+    background: #111820;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+}
+[data-testid="stExpander"] summary {
+    color: #ff9800;
+    font-family: 'JetBrains Mono', monospace;
+}
+[data-testid="stExpander"] details {
+    border-color: #1a2332 !important;
+}
+
+/* ── Alert Boxes ── */
+[data-testid="stAlert"] {
+    background: #111820;
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background: #0b0f14;
+    border-right: 1px solid #1a2332;
+}
+
+/* ── Radio / Checkbox ── */
+[data-testid="stRadio"] label,
+[data-testid="stCheckbox"] label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #e0e0e0;
+}
+
+/* ── Toast ── */
+[data-testid="stToast"] {
+    background: #111820;
+    border: 1px solid #1a2332;
+    color: #e0e0e0;
+}
+
+/* ── Pulsing Live Indicator ── */
+@keyframes pulse-live {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+.live-pulse {
+    animation: pulse-live 2s ease-in-out infinite;
+}
+
+/* ── Dark Scrollbars ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0b0f14; }
+::-webkit-scrollbar-thumb { background: #1a2332; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3a4a; }
+
+/* ── Caption / Small Text ── */
+.stCaption, [data-testid="stCaption"] {
+    color: #8899aa !important;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+}
+
+/* ── Column containers ── */
+[data-testid="stHorizontalBlock"] {
+    gap: 0.75rem;
+}
+
+/* ── Plotly chart backgrounds ── */
+.stPlotlyChart {
+    border: 1px solid #1a2332;
+    border-radius: 4px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ----------------------------
 # DB CONNECTION
