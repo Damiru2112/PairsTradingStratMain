@@ -1325,13 +1325,32 @@ if not daily_df.empty:
     except Exception:
         pass
 
-    col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
-    col_m1.metric("Period P&L", f"${total_pnl:+,.2f}")
-    col_m2.metric("Total Trades", f"{total_trades}")
-    col_m3.metric("Win Rate", f"{win_rate:.1f}%")
-    col_m4.metric("Avg P&L / Trade", f"${avg_pnl_per_trade:+,.2f}")
-    col_m5.metric("Avg Hold Time", avg_hold_str)
-    col_m6.metric("Total Fees", f"${total_fees:,.2f}")
+    # Sharpe Ratio from daily equity returns
+    sharpe_str = "N/A"
+    try:
+        import numpy as np
+        eq_sorted = daily_df.sort_values("date")
+        equities = eq_sorted["total_equity"].dropna()
+        if len(equities) >= 3:
+            daily_returns = equities.pct_change().dropna()
+            mean_ret = daily_returns.mean()
+            std_ret = daily_returns.std()  # sample std
+            if std_ret > 0:
+                sharpe = mean_ret / std_ret * np.sqrt(252)
+                sharpe_str = f"{sharpe:.2f}"
+    except Exception:
+        pass
+
+    # 3 columns x 2 rows
+    col_a1, col_a2, col_a3 = st.columns(3)
+    col_a1.metric("Total Trades", f"{total_trades}")
+    col_a2.metric("Win Rate", f"{win_rate:.1f}%")
+    col_a3.metric("Sharpe Ratio", sharpe_str)
+
+    col_b1, col_b2, col_b3 = st.columns(3)
+    col_b1.metric("Avg P&L / Trade", f"${avg_pnl_per_trade:+,.2f}")
+    col_b2.metric("Avg Hold Time", avg_hold_str)
+    col_b3.metric("Total Fees", f"${total_fees:,.2f}")
 
 else:
     st.info("No daily performance data recorded yet.")
