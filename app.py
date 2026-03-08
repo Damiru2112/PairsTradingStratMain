@@ -16,6 +16,50 @@ from streamlit_autorefresh import st_autorefresh
 import db
 
 # ----------------------------
+# BLOOMBERG CHART TEMPLATE
+# ----------------------------
+BLOOMBERG_LAYOUT = dict(
+    paper_bgcolor="#0b0f14",
+    plot_bgcolor="#0e1419",
+    font=dict(family="IBM Plex Mono, Consolas, Courier New, monospace", size=11, color="#8899aa"),
+    title_font=dict(size=13, color="#ff9800"),
+    xaxis=dict(
+        gridcolor="#1a2332", gridwidth=1, griddash="dot",
+        zerolinecolor="#1a2332", zerolinewidth=1,
+        tickfont=dict(size=10, color="#5a6a7a"),
+        title_font=dict(size=11, color="#5a6a7a"),
+        showline=True, linecolor="#1a2332", linewidth=1,
+    ),
+    yaxis=dict(
+        gridcolor="#1a2332", gridwidth=1, griddash="dot",
+        zerolinecolor="#1a2332", zerolinewidth=1,
+        tickfont=dict(size=10, color="#5a6a7a"),
+        title_font=dict(size=11, color="#5a6a7a"),
+        showline=True, linecolor="#1a2332", linewidth=1,
+    ),
+    legend=dict(
+        bgcolor="rgba(0,0,0,0)", bordercolor="#1a2332", borderwidth=1,
+        font=dict(size=10, color="#8899aa"),
+    ),
+    hovermode="x unified",
+    hoverlabel=dict(
+        bgcolor="#111820", bordercolor="#1a2332",
+        font=dict(family="IBM Plex Mono, Consolas, monospace", size=11, color="#c8cdd3"),
+    ),
+    margin=dict(t=35, b=50, l=50, r=20),
+)
+
+# Bloomberg-style color constants
+BB_CYAN = "#00b4d8"
+BB_AMBER = "#ff9800"
+BB_GREEN = "#00c853"
+BB_RED = "#ff1744"
+BB_BLUE = "#3a86ff"
+BB_GREY = "#5a6a7a"
+BB_LIGHT = "#c8cdd3"
+BB_DIM = "#2a3a4a"
+
+# ----------------------------
 # PAGE CONFIG
 # ----------------------------
 st.set_page_config(page_title="Pairs Trading Dashboard", layout="wide", page_icon="📈",
@@ -27,20 +71,32 @@ st_autorefresh(interval=15_000, key="auto_refresh")  # 15s refresh
 # ----------------------------
 st.markdown("""
 <style>
+/* ── Load Bloomberg-style monospace font ── */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
+
 /* ── Hide Streamlit Chrome ── */
 #MainMenu, footer, header { visibility: hidden; }
+
+/* ── GLOBAL MONOSPACE FONT — Bloomberg uses mono everywhere ── */
+html, body, [class*="css"], .stApp,
+[data-testid="stAppViewContainer"],
+p, span, label, li, td, th, div, input, select, textarea, button, a {
+    font-family: 'IBM Plex Mono', 'Share Tech Mono', 'JetBrains Mono', 'Consolas', 'Courier New', monospace !important;
+    -webkit-font-smoothing: antialiased;
+}
 
 /* ── Dark Terminal Background ── */
 [data-testid="stAppViewContainer"],
 [data-testid="stMain"],
 .stApp {
     background-color: #0b0f14;
-    color: #e0e0e0;
+    color: #c8cdd3;
+    font-size: 13px;
 }
 
 /* ── Compact Layout ── */
 .block-container {
-    padding-top: 1rem;
+    padding-top: 0.75rem;
     padding-bottom: 0;
     max-width: 100%;
 }
@@ -49,78 +105,113 @@ st.markdown("""
 [data-testid="stMetric"] {
     background: #111820;
     border: 1px solid #1a2332;
-    border-radius: 4px;
-    padding: 12px 16px;
+    border-radius: 2px;
+    padding: 10px 14px;
 }
 [data-testid="stMetricValue"] {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace;
     color: #e0e0e0;
+    font-size: 20px !important;
+    font-weight: 600;
+    letter-spacing: -0.5px;
 }
 [data-testid="stMetricLabel"] {
-    color: #8899aa;
-    font-size: 12px;
+    color: #5a6a7a;
+    font-size: 11px !important;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 1px;
+    font-weight: 500;
 }
 
 /* ── Subheaders — Bloomberg Amber ── */
 h2, h3, [data-testid="stSubheader"] {
     color: #ff9800 !important;
     text-transform: uppercase;
-    letter-spacing: 1.5px;
-    font-size: 14px !important;
+    letter-spacing: 2px;
+    font-size: 13px !important;
     font-weight: 600;
     border-bottom: 1px solid #1a2332;
-    padding-bottom: 6px;
-    margin-top: 1rem;
+    padding-bottom: 4px;
+    margin-top: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+h1 {
+    color: #ff9800 !important;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    font-size: 16px !important;
+    font-weight: 700;
+}
+
+/* ── Paragraph / body text ── */
+p, [data-testid="stText"], [data-testid="stMarkdown"] p {
+    font-size: 13px;
+    line-height: 1.4;
+    color: #c8cdd3;
 }
 
 /* ── Tables — Market Monitor Grid ── */
 [data-testid="stDataFrame"] {
     border: 1px solid #1a2332;
-    border-radius: 4px;
+    border-radius: 2px;
 }
 [data-testid="stDataFrame"] table {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 13px;
+    font-size: 12px !important;
+}
+[data-testid="stDataFrame"] th {
+    background: #141c26 !important;
+    color: #ff9800 !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    border-bottom: 1px solid #1a2332 !important;
+}
+[data-testid="stDataFrame"] td {
+    border-bottom: 1px solid #0f1720 !important;
+    color: #c8cdd3;
+    padding: 4px 8px !important;
 }
 [data-testid="stDataFrame"] [data-testid="stDataFrameResizable"] {
-    background: #111820;
+    background: #0e1419;
 }
 
 /* ── Tabs — Terminal Style ── */
 [data-testid="stTabs"] [data-baseweb="tab-list"] {
-    background: #111820;
+    background: #0e1419;
     border-bottom: 1px solid #1a2332;
     gap: 0;
 }
 [data-testid="stTabs"] [data-baseweb="tab"] {
     background: transparent;
-    color: #8899aa;
+    color: #5a6a7a;
     border-radius: 0;
     border-bottom: 2px solid transparent;
-    padding: 8px 20px;
-    font-family: 'JetBrains Mono', monospace;
+    padding: 6px 18px;
     text-transform: uppercase;
-    font-size: 12px;
-    letter-spacing: 1px;
+    font-size: 11px !important;
+    letter-spacing: 1.5px;
+    font-weight: 500;
 }
 [data-testid="stTabs"] [aria-selected="true"] {
     color: #ff9800 !important;
     border-bottom-color: #ff9800 !important;
-    background: rgba(255, 152, 0, 0.05);
+    background: rgba(255, 152, 0, 0.04);
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:hover {
+    color: #c8cdd3;
 }
 
 /* ── Buttons — Terminal Controls ── */
 .stButton > button {
     background: #111820;
-    color: #e0e0e0;
+    color: #c8cdd3;
     border: 1px solid #1a2332;
-    border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
+    border-radius: 2px;
     text-transform: uppercase;
-    font-size: 12px;
-    letter-spacing: 0.5px;
+    font-size: 11px !important;
+    letter-spacing: 1px;
+    font-weight: 500;
+    padding: 6px 16px;
 }
 .stButton > button:hover {
     border-color: #ff9800;
@@ -136,53 +227,65 @@ h2, h3, [data-testid="stSubheader"] {
 }
 .stButton > button[kind="primary"]:hover,
 .stButton > button[data-testid="stBaseButton-primary"]:hover {
-    background: #ffb74d;
+    background: #e68a00;
     color: #0b0f14;
 }
 
 /* ── Inputs / Selects ── */
-[data-testid="stSelectbox"],
-[data-testid="stNumberInput"],
-[data-testid="stTextInput"] {
-    font-family: 'JetBrains Mono', monospace;
-}
 [data-baseweb="select"] > div {
-    background: #111820 !important;
+    background: #0e1419 !important;
     border-color: #1a2332 !important;
-    color: #e0e0e0;
+    color: #c8cdd3;
+    border-radius: 2px !important;
+    font-size: 12px;
 }
 [data-baseweb="input"] > div {
-    background: #111820 !important;
+    background: #0e1419 !important;
     border-color: #1a2332 !important;
+    border-radius: 2px !important;
 }
 [data-baseweb="popover"] > div {
     background: #111820 !important;
     border: 1px solid #1a2332;
+    border-radius: 2px !important;
 }
 [data-baseweb="menu"] {
     background: #111820 !important;
 }
 [data-baseweb="menu"] li {
-    color: #e0e0e0;
+    color: #c8cdd3;
+    font-size: 12px;
 }
 [data-baseweb="menu"] li:hover {
     background: #1a2332 !important;
+    color: #ff9800;
+}
+/* Input labels */
+.stSelectbox label, .stTextInput label, .stNumberInput label {
+    color: #5a6a7a !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 /* ── Dividers ── */
 [data-testid="stDivider"], hr {
     border-color: #1a2332 !important;
+    margin-top: 0.5rem;
+    margin-bottom: 0.5rem;
 }
 
 /* ── Expanders ── */
 [data-testid="stExpander"] {
-    background: #111820;
+    background: #0e1419;
     border: 1px solid #1a2332;
-    border-radius: 4px;
+    border-radius: 2px;
 }
 [data-testid="stExpander"] summary {
     color: #ff9800;
-    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 [data-testid="stExpander"] details {
     border-color: #1a2332 !important;
@@ -192,9 +295,8 @@ h2, h3, [data-testid="stSubheader"] {
 [data-testid="stAlert"] {
     background: #111820;
     border: 1px solid #1a2332;
-    border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
+    border-radius: 2px;
+    font-size: 12px;
 }
 
 /* ── Sidebar ── */
@@ -206,16 +308,16 @@ h2, h3, [data-testid="stSubheader"] {
 /* ── Radio / Checkbox ── */
 [data-testid="stRadio"] label,
 [data-testid="stCheckbox"] label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    color: #e0e0e0;
+    font-size: 12px;
+    color: #c8cdd3;
 }
 
 /* ── Toast ── */
 [data-testid="stToast"] {
     background: #111820;
     border: 1px solid #1a2332;
-    color: #e0e0e0;
+    color: #c8cdd3;
+    border-radius: 2px;
 }
 
 /* ── Pulsing Live Indicator ── */
@@ -245,10 +347,33 @@ h2, h3, [data-testid="stSubheader"] {
     gap: 0.75rem;
 }
 
-/* ── Plotly chart backgrounds ── */
+/* ── Plotly Charts — Terminal Style ── */
 .stPlotlyChart {
     border: 1px solid #1a2332;
-    border-radius: 4px;
+    border-radius: 2px;
+    background: #0e1419;
+    padding: 4px;
+}
+/* Plotly modebar (toolbar) — dark theme */
+.stPlotlyChart .modebar {
+    background: transparent !important;
+}
+.stPlotlyChart .modebar-btn {
+    color: #5a6a7a !important;
+}
+.stPlotlyChart .modebar-btn:hover {
+    color: #ff9800 !important;
+}
+.stPlotlyChart .modebar-btn.active {
+    color: #ff9800 !important;
+}
+/* Plotly hover info styling */
+.stPlotlyChart .hoverlayer .hovertext rect {
+    fill: #111820 !important;
+    stroke: #1a2332 !important;
+}
+.stPlotlyChart .hoverlayer .hovertext text {
+    fill: #c8cdd3 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -619,8 +744,10 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
     # Use data-based 'now' to avoid timezone issues
     if history.empty or "time" not in history.columns or "z" not in history.columns:
         fig = go.Figure()
-        fig.add_annotation(text="No data available", xref="paper", yref="paper",
-                          x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+        fig.update_layout(**BLOOMBERG_LAYOUT)
+        fig.add_annotation(text="NO DATA AVAILABLE", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False,
+                          font=dict(size=13, color=BB_GREY, family="IBM Plex Mono, monospace"))
         return fig
     
     now = history["time"].max()
@@ -638,8 +765,10 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
     # Guard: insufficient data - return empty figure with message
     if len(z10) < 20:
         fig = go.Figure()
-        fig.add_annotation(text="Not enough history for histogram", xref="paper", yref="paper",
-                          x=0.5, y=0.5, showarrow=False, font=dict(size=14, color="orange"))
+        fig.update_layout(**BLOOMBERG_LAYOUT)
+        fig.add_annotation(text="INSUFFICIENT HISTORY FOR HISTOGRAM", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False,
+                          font=dict(size=12, color=BB_AMBER, family="IBM Plex Mono, monospace"))
         return fig
     
     # Apply clipping BEFORE computing bin edges
@@ -661,7 +790,8 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
         name="10w (≈50d)",
         histnorm="probability density",
         xbins=dict(start=bin_min, end=bin_max, size=bin_size),
-        marker_color="steelblue",
+        marker_color=BB_CYAN,
+        marker_line=dict(color="#0b0f14", width=0.5),
         opacity=0.85
     ))
     
@@ -672,31 +802,37 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
             name="4w (≈20d)",
             histnorm="probability density",
             xbins=dict(start=bin_min, end=bin_max, size=bin_size),
-            marker_color="coral",
+            marker_color=BB_AMBER,
+            marker_line=dict(color="#0b0f14", width=0.5),
             opacity=0.5
         ))
     
     # Reference lines
-    fig.add_vline(x=0, line_dash="solid", line_color="gray", line_width=1,
-                  annotation_text="0", annotation_position="top")
-    fig.add_vline(x=z_entry, line_dash="dash", line_color="green", line_width=1.5,
-                  annotation_text=f"+Entry", annotation_position="top right")
-    fig.add_vline(x=-z_entry, line_dash="dash", line_color="green", line_width=1.5,
-                  annotation_text=f"-Entry", annotation_position="top left")
+    fig.add_vline(x=0, line_dash="solid", line_color=BB_GREY, line_width=1,
+                  annotation_text="0", annotation_position="top",
+                  annotation_font_color=BB_GREY)
+    fig.add_vline(x=z_entry, line_dash="dash", line_color=BB_GREEN, line_width=1.5,
+                  annotation_text=f"+Entry", annotation_position="top right",
+                  annotation_font_color=BB_GREEN)
+    fig.add_vline(x=-z_entry, line_dash="dash", line_color=BB_GREEN, line_width=1.5,
+                  annotation_text=f"-Entry", annotation_position="top left",
+                  annotation_font_color=BB_GREEN)
     
     # Current z marker
     if current_z is not None:
-        fig.add_vline(x=current_z, line_dash="solid", line_color="red", line_width=2,
-                      annotation_text=f"Current", annotation_position="bottom right")
+        fig.add_vline(x=current_z, line_dash="solid", line_color=BB_RED, line_width=2,
+                      annotation_text=f"Current", annotation_position="bottom right",
+                      annotation_font_color=BB_RED)
     
     # Layout
     fig.update_layout(
+        **BLOOMBERG_LAYOUT,
         barmode="overlay",
         title=None,
         xaxis_title="Z-Score",
         yaxis_title="Density",
-        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-        margin=dict(t=30, b=60),
+        legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        margin=dict(t=20, b=50, l=50, r=20),
         height=300
     )
     
@@ -1738,41 +1874,44 @@ if not daily_df.empty:
         fig_pnl = go.Figure()
         
         # Color bars based on PnL
-        colors = ["#2e7d32" if v >= 0 else "#d32f2f" for v in daily_df["realized_pnl"]]
-        
+        colors = [BB_GREEN if v >= 0 else BB_RED for v in daily_df["realized_pnl"]]
+
         fig_pnl.add_trace(go.Bar(
             x=daily_df["date"],
             y=daily_df["realized_pnl"],
             marker_color=colors,
+            marker_line=dict(color="#0b0f14", width=0.5),
             name="Daily P&L",
             hovertemplate="Date: %{x|%Y-%m-%d}<br>PnL: $%{y:,.2f}<extra></extra>"
         ))
-        
+
         # Add Equity Line (Secondary Axis)
         fig_pnl.add_trace(go.Scatter(
             x=daily_df["date"],
             y=daily_df["total_equity"],
             mode="lines+markers",
-            line=dict(color="white", width=2),
-            marker=dict(size=6),
+            line=dict(color=BB_AMBER, width=2),
+            marker=dict(size=4, color=BB_AMBER),
             name="Equity",
             yaxis="y2",
             hovertemplate="Equity: $%{y:,.2f}<extra></extra>"
         ))
-        
+
         fig_pnl.update_layout(
-            title="Daily P&L & Equity",
+            **BLOOMBERG_LAYOUT,
+            title="DAILY P&L & EQUITY",
             xaxis_title="Date",
             yaxis_title="Realized P&L",
             yaxis2=dict(
                 title="Total Equity",
                 overlaying="y",
                 side="right",
-                showgrid=False
+                showgrid=False,
+                tickfont=dict(size=10, color=BB_AMBER),
+                title_font=dict(size=11, color=BB_AMBER),
             ),
-            legend=dict(orientation="h", y=1.1),
+            legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", y=1.1),
             height=350,
-            hovermode="x unified"
         )
         
         st.plotly_chart(fig_pnl, use_container_width=True)
@@ -1945,21 +2084,22 @@ if selected_pair:
                 # Grey No-Trade Zone: between -z_entry and +z_entry
                 fig.add_hrect(
                     y0=-z_entry, y1=z_entry,
-                    fillcolor="rgba(128, 128, 128, 0.15)",
+                    fillcolor="rgba(90, 106, 122, 0.08)",
                     layer="below", line_width=0,
-                    annotation_text="No-Trade Zone", annotation_position="top left",
-                    annotation=dict(font_size=10, font_color="gray")
+                    annotation_text="NO-TRADE ZONE", annotation_position="top left",
+                    annotation=dict(font_size=9, font_color=BB_GREY,
+                                    font=dict(family="IBM Plex Mono, monospace"))
                 )
                 # Green Trade Zone: above +z_entry (dynamic range)
                 fig.add_hrect(
                     y0=z_entry, y1=y_max,
-                    fillcolor="rgba(76, 175, 80, 0.12)",
+                    fillcolor="rgba(0, 200, 83, 0.06)",
                     layer="below", line_width=0
                 )
                 # Green Trade Zone: below -z_entry (dynamic range)
                 fig.add_hrect(
                     y0=y_min, y1=-z_entry,
-                    fillcolor="rgba(76, 175, 80, 0.12)",
+                    fillcolor="rgba(0, 200, 83, 0.06)",
                     layer="below", line_width=0
                 )
                 
@@ -1969,32 +2109,36 @@ if selected_pair:
                         x=history_old["time"],
                         y=history_old["z"],
                         mode="lines",
-                        line=dict(color="steelblue", width=1),
-                        opacity=0.4,
+                        line=dict(color=BB_DIM, width=1),
+                        opacity=0.5,
                         name="Prior 45d",
                         hovertemplate="Z: %{y:.2f}<br>%{x}<extra></extra>"
                     ))
-                
+
                 # 3. Recent 30-day line (thick, bright)
                 if not history_recent.empty:
                     fig.add_trace(go.Scatter(
                         x=history_recent["time"],
                         y=history_recent["z"],
                         mode="lines",
-                        line=dict(color="dodgerblue", width=1.8),
+                        line=dict(color=BB_CYAN, width=1.8),
                         name="Recent 30d",
                         hovertemplate="Z: %{y:.2f}<br>%{x}<extra></extra>"
                     ))
                 
                 # 4. Threshold Lines
-                fig.add_hline(y=z_entry, line_dash="dash", line_color="green", 
-                              annotation_text=f"+Entry ({z_entry})", annotation_position="right")
-                fig.add_hline(y=-z_entry, line_dash="dash", line_color="green",
-                              annotation_text=f"-Entry ({z_entry})", annotation_position="right")
-                fig.add_hline(y=z_exit, line_dash="dot", line_color="orangered", 
-                              annotation_text=f"+Exit ({z_exit})", annotation_position="right")
-                fig.add_hline(y=-z_exit, line_dash="dot", line_color="orangered",
-                              annotation_text=f"-Exit ({z_exit})", annotation_position="right")
+                fig.add_hline(y=z_entry, line_dash="dash", line_color=BB_GREEN, line_width=1,
+                              annotation_text=f"+ENTRY ({z_entry})", annotation_position="right",
+                              annotation_font=dict(size=9, color=BB_GREEN, family="IBM Plex Mono, monospace"))
+                fig.add_hline(y=-z_entry, line_dash="dash", line_color=BB_GREEN, line_width=1,
+                              annotation_text=f"-ENTRY ({z_entry})", annotation_position="right",
+                              annotation_font=dict(size=9, color=BB_GREEN, family="IBM Plex Mono, monospace"))
+                fig.add_hline(y=z_exit, line_dash="dot", line_color=BB_AMBER, line_width=1,
+                              annotation_text=f"+EXIT ({z_exit})", annotation_position="right",
+                              annotation_font=dict(size=9, color=BB_AMBER, family="IBM Plex Mono, monospace"))
+                fig.add_hline(y=-z_exit, line_dash="dot", line_color=BB_AMBER, line_width=1,
+                              annotation_text=f"-EXIT ({z_exit})", annotation_position="right",
+                              annotation_font=dict(size=9, color=BB_AMBER, family="IBM Plex Mono, monospace"))
                 
                 # 5. Entry Signal Markers (detect crossings)
                 signals = detect_entry_signals(history, z_entry)
@@ -2008,28 +2152,28 @@ if selected_pair:
                     
                     if is_blocked:
                         # Red X markers for blocked state
-                        hover_texts = [f"Entry Signal (Blocked)<br>Reason: {block_reason}<br>Direction: {d}<br>Z: {z:.2f}" 
+                        hover_texts = [f"Entry Signal (Blocked)<br>Reason: {block_reason}<br>Direction: {d}<br>Z: {z:.2f}"
                                        for d, z in zip(sig_dirs, sig_zs)]
                         fig.add_trace(go.Scatter(
                             x=sig_times,
                             y=sig_zs,
                             mode="markers",
-                            marker=dict(size=12, color="red", symbol="x",
-                                        line=dict(width=2, color="darkred")),
+                            marker=dict(size=10, color=BB_RED, symbol="x",
+                                        line=dict(width=2, color="#cc0000")),
                             showlegend=False,
                             hovertemplate="%{text}<extra></extra>",
                             text=hover_texts
                         ))
                     else:
-                        # Blue circle markers for valid state
-                        hover_texts = [f"Entry Signal<br>Direction: {d}<br>Z: {z:.2f}" 
+                        # Cyan circle markers for valid state
+                        hover_texts = [f"Entry Signal<br>Direction: {d}<br>Z: {z:.2f}"
                                        for d, z in zip(sig_dirs, sig_zs)]
                         fig.add_trace(go.Scatter(
                             x=sig_times,
                             y=sig_zs,
                             mode="markers",
-                            marker=dict(size=10, color="blue", symbol="circle",
-                                        line=dict(width=1, color="white")),
+                            marker=dict(size=8, color=BB_CYAN, symbol="circle",
+                                        line=dict(width=1, color="#0b0f14")),
                             showlegend=False,
                             hovertemplate="%{text}<extra></extra>",
                             text=hover_texts
@@ -2037,8 +2181,8 @@ if selected_pair:
                 
                 # 6. Day separators (subtle vertical lines)
                 for dt in day_change_times:
-                    fig.add_vline(x=dt, line_width=1, line_dash="dash", 
-                                  line_color="grey", opacity=0.3)
+                    fig.add_vline(x=dt, line_width=1, line_dash="dot",
+                                  line_color="#1a2332", opacity=0.5)
                 
                 # 7. Current State Annotation (top-right)
                 if not history.empty:
@@ -2064,23 +2208,24 @@ if selected_pair:
                         xanchor="right", yanchor="top",
                         text=annotation_text,
                         showarrow=False,
-                        bgcolor="rgba(30,30,30,0.85)",
-                        font=dict(color="white", size=11),
-                        bordercolor="rgba(255,255,255,0.3)",
+                        bgcolor="rgba(17, 24, 32, 0.92)",
+                        font=dict(color=BB_LIGHT, size=10,
+                                  family="IBM Plex Mono, monospace"),
+                        bordercolor="#1a2332",
                         borderwidth=1, borderpad=8,
                         align="left"
                     )
                 
                 # Layout
                 fig.update_layout(
-                    title="Z-Score History (75 Days)",
+                    **BLOOMBERG_LAYOUT,
+                    title="Z-SCORE HISTORY (75 DAYS)",
                     xaxis_title="",
                     yaxis_title="Z-Score",
-                    yaxis=dict(range=[y_min, y_max]),
-                    xaxis=dict(tickangle=-45),
-                    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-                    margin=dict(r=100),  # Room for annotations
-                    hovermode="x unified"
+                    yaxis=dict(**BLOOMBERG_LAYOUT["yaxis"], range=[y_min, y_max]),
+                    xaxis=dict(**BLOOMBERG_LAYOUT["xaxis"], tickangle=-45),
+                    legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+                    margin=dict(t=35, b=50, l=50, r=100),
                 )
                 
                 st.plotly_chart(fig, use_container_width=True, 
@@ -2133,43 +2278,48 @@ if selected_pair:
                                     x=series_1m["time"],
                                     y=series_1m["z_1m"],
                                     mode="lines+markers",
-                                    line=dict(color="dodgerblue", width=1.5),
-                                    marker=dict(size=4),
+                                    line=dict(color=BB_CYAN, width=1.5),
+                                    marker=dict(size=3, color=BB_CYAN),
                                     name="Z-Score (1m)",
                                     hovertemplate="1m Z: %{y:.2f}<br>%{x}<extra></extra>"
                                 ))
-                            
+
                                 # 15m z-score line (for comparison)
                                 if not history_window.empty:
                                     fig_compare.add_trace(go.Scatter(
                                         x=history_window["time"],
                                         y=history_window["z"],
                                         mode="lines+markers",
-                                        line=dict(color="orange", width=2, dash="dot"),
-                                        marker=dict(size=6, symbol="square"),
+                                        line=dict(color=BB_AMBER, width=2, dash="dot"),
+                                        marker=dict(size=5, symbol="square", color=BB_AMBER),
                                         name="Z-Score (15m)",
                                         hovertemplate="15m Z: %{y:.2f}<br>%{x}<extra></extra>"
                                     ))
-                            
+
                                 # Entry thresholds
-                                fig_compare.add_hline(y=z_entry, line_dash="dash", line_color="green", opacity=0.6)
-                                fig_compare.add_hline(y=-z_entry, line_dash="dash", line_color="green", opacity=0.6)
-                            
+                                fig_compare.add_hline(y=z_entry, line_dash="dash", line_color=BB_GREEN, opacity=0.6,
+                                                      annotation_text=f"+ENTRY", annotation_position="right",
+                                                      annotation_font=dict(size=9, color=BB_GREEN, family="IBM Plex Mono, monospace"))
+                                fig_compare.add_hline(y=-z_entry, line_dash="dash", line_color=BB_GREEN, opacity=0.6,
+                                                      annotation_text=f"-ENTRY", annotation_position="right",
+                                                      annotation_font=dict(size=9, color=BB_GREEN, family="IBM Plex Mono, monospace"))
+
                                 # Mark persistence filter pass/fail
                                 passed = series_1m[series_1m["passed_persistence"] == 1]
                                 failed = series_1m[series_1m["passed_persistence"] == 0]
-                            
+
                                 if not passed.empty:
                                     fig_compare.add_trace(go.Scatter(
                                         x=passed["time"], y=passed["z_1m"],
-                                        mode="markers", marker=dict(size=8, color="green", symbol="circle"),
+                                        mode="markers", marker=dict(size=7, color=BB_GREEN, symbol="circle"),
                                         name="Persistence ✓", hovertemplate="PASSED<extra></extra>"
                                     ))
-                            
+
                                 fig_compare.update_layout(
-                                    title="1-Minute vs 15-Minute Z-Score Comparison",
+                                    **BLOOMBERG_LAYOUT,
+                                    title="1-MIN vs 15-MIN Z-SCORE",
                                     xaxis_title="Time", yaxis_title="Z-Score",
-                                    legend=dict(orientation="h", y=-0.15),
+                                    legend=dict(**BLOOMBERG_LAYOUT["legend"], orientation="h", y=-0.15),
                                     height=350
                                 )
                             
@@ -2191,14 +2341,15 @@ if selected_pair:
 
             # Beta Chart
                 st.markdown(f"### {selected_pair} Beta Drift")
-                fig_beta = px.line(history, x="time", y=["direct_beta", "beta_30_weekly"], 
-                                 title="Direct vs 30D Beta", color_discrete_sequence=["blue", "orange"])
-                
+                fig_beta = px.line(history, x="time", y=["direct_beta", "beta_30_weekly"],
+                                 title="DIRECT vs 30D BETA", color_discrete_sequence=[BB_CYAN, BB_AMBER])
+
+                fig_beta.update_layout(**BLOOMBERG_LAYOUT)
                 fig_beta.update_xaxes(tickangle=-45)
-                
+
                 for dt in day_change_times:
-                    fig_beta.add_vline(x=dt, line_width=1, line_dash="dash", line_color="grey", opacity=0.5)
-                    
+                    fig_beta.add_vline(x=dt, line_width=1, line_dash="dot", line_color="#1a2332", opacity=0.5)
+
                 st.plotly_chart(fig_beta, use_container_width=True)
 
             with chk2:
@@ -2264,17 +2415,18 @@ if selected_pair:
 
         # 30-Day Beta Chart
         st.markdown(f"### {selected_pair} Beta Drift (30 Days)")
-        fig_beta_long = px.line(history_long, x="time", y=["direct_beta", "beta_30_weekly"], 
-                          title="Direct vs 30D Beta (30 Day View)", color_discrete_sequence=["blue", "orange"])
-        
+        fig_beta_long = px.line(history_long, x="time", y=["direct_beta", "beta_30_weekly"],
+                          title="DIRECT vs 30D BETA (30 DAY VIEW)", color_discrete_sequence=[BB_CYAN, BB_AMBER])
+
+        fig_beta_long.update_layout(**BLOOMBERG_LAYOUT)
         # Sparse ticks for long view
         fig_beta_long.update_xaxes(tickangle=-45, nticks=20)
-        
+
         # Add Day Separators (only if reasonable number, say < 50)
         if len(day_change_times_long) < 60:
              for dt in day_change_times_long:
-                fig_beta_long.add_vline(x=dt, line_width=1, line_dash="dash", line_color="grey", opacity=0.3)
-            
+                fig_beta_long.add_vline(x=dt, line_width=1, line_dash="dot", line_color="#1a2332", opacity=0.3)
+
         st.plotly_chart(fig_beta_long, use_container_width=True)
     else:
         st.info("Not enough history for long-term view.")
