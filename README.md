@@ -20,7 +20,7 @@ The system:
 - Simulates execution via a **stateful portfolio engine**
 - Exposes a **real-time monitoring dashboard**
 
-It is designed as a **production trading system — not a notebook prototype.**
+It is designed as a **production trading system**
 
 ---
 
