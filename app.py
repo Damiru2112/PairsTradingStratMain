@@ -1194,9 +1194,27 @@ with col1:
             st.metric("Available Equity", f"${available:,.2f}",
                       delta=f"-${allocated:,.0f} allocated" if allocated > 0 else None)
 
-            c1, c2 = st.columns(2)
+            # Portfolio Delta: sum of (long notional - short notional) across open positions
+            portfolio_delta = 0.0
+            if not positions.empty:
+                for _, pos in positions.iterrows():
+                    try:
+                        q1 = float(pos.get("qty1", 0) or 0)
+                        q2 = float(pos.get("qty2", 0) or 0)
+                        lp1 = float(pos.get("last_price1", 0) or 0)
+                        lp2 = float(pos.get("last_price2", 0) or 0)
+                        direction = pos.get("direction", "")
+                        if direction == "LONG_SPREAD":
+                            portfolio_delta += (lp1 * q1) - (lp2 * q2)
+                        else:  # SHORT_SPREAD
+                            portfolio_delta += (lp2 * q2) - (lp1 * q1)
+                    except:
+                        pass
+
+            c1, c2, c3 = st.columns(3)
             c1.metric("Realized P&L", f"${realized:+,.2f}")
             c2.metric("Unrealized P&L", f"${unrealized:+,.2f}")
+            c3.metric("Portfolio Delta", f"${portfolio_delta:+,.2f}")
         except Exception as e:
             st.error(f"Error parsing PnL: {e}")
     else:
@@ -1408,6 +1426,22 @@ if not positions.empty:
                     return 0.0
 
             positions["equity"] = positions.apply(calc_equity, axis=1)
+
+            def calc_delta(row):
+                try:
+                    q1 = float(row.get("qty1", 0) or 0)
+                    q2 = float(row.get("qty2", 0) or 0)
+                    p1 = float(row.get("last_price1", 0) or 0)
+                    p2 = float(row.get("last_price2", 0) or 0)
+                    direction = row.get("direction", "")
+                    if direction == "LONG_SPREAD":
+                        return (p1 * q1) - (p2 * q2)
+                    else:
+                        return (p2 * q2) - (p1 * q1)
+                except:
+                    return 0.0
+
+            positions["delta"] = positions.apply(calc_delta, axis=1)
             positions["beta_drift_display"] = positions["beta_drift_pct"].apply(
                 lambda x: f"{abs(x):.1f}%" if pd.notnull(x) else "N/A"
             )
@@ -1419,7 +1453,7 @@ if not positions.empty:
             positions["entry_time_str"] = str(e)
             positions["duration_str"] = "Err"
 
-    display_cols = ["pair", "duration_str", "beta_drift_display", "equity", "pnl_unrealized", "entry_time_str", "beta_drift_limit"]
+    display_cols = ["pair", "duration_str", "beta_drift_display", "equity", "delta", "pnl_unrealized", "entry_time_str", "beta_drift_limit"]
     valid_cols = [c for c in display_cols if c in positions.columns]
 
     edited_positions = st.data_editor(
@@ -1430,6 +1464,7 @@ if not positions.empty:
             "duration_str": st.column_config.Column("Duration", disabled=True),
             "beta_drift_display": st.column_config.Column("Drift %", disabled=True),
             "equity": st.column_config.NumberColumn("Equity", format="$%.0f", disabled=True),
+            "delta": st.column_config.NumberColumn("Delta", format="$%.2f", disabled=True),
             "pnl_unrealized": st.column_config.NumberColumn("Unrealized P&L", format="$%.2f", disabled=True),
             "entry_time_str": st.column_config.TextColumn("Entry Time (NY)", disabled=True),
             "beta_drift_limit": st.column_config.NumberColumn("Drift Limit %", min_value=1.0, max_value=100.0, step=0.5, format="%.1f%%", help="Close position if drift exceeds this %")
