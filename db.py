@@ -262,6 +262,14 @@ def init_db(con: sqlite3.Connection) -> None:
         );
     """)
 
+    # Risk Config (portfolio risk overlay settings — editable from dashboard)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS risk_config (
+            key TEXT PRIMARY KEY,
+            value REAL NOT NULL
+        );
+    """)
+
 # ==============================================================================
 # WRITERS
 # ==============================================================================
@@ -657,3 +665,27 @@ def get_equity_curve(con: sqlite3.Connection, days: int = 30) -> pd.DataFrame:
         "SELECT * FROM equity_curve WHERE timestamp >= ? ORDER BY timestamp",
         con, params=(cutoff,)
     )
+
+
+# ==============================================================================
+# RISK CONFIG (portfolio risk overlay settings)
+# ==============================================================================
+
+def get_risk_config(con: sqlite3.Connection) -> Dict[str, float]:
+    """Read all risk_config key-value pairs as a dict."""
+    try:
+        rows = con.execute("SELECT key, value FROM risk_config").fetchall()
+        return {k: v for k, v in rows}
+    except Exception:
+        return {}
+
+
+def save_risk_config(con: sqlite3.Connection, updates: Dict[str, float]) -> None:
+    """Upsert risk config key-value pairs."""
+    if not updates:
+        return
+    with con:
+        con.executemany(
+            "INSERT OR REPLACE INTO risk_config (key, value) VALUES (?, ?)",
+            list(updates.items()),
+        )

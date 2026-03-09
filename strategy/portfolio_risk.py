@@ -48,6 +48,28 @@ PORTFOLIO_RISK_CONFIG: Dict[str, Any] = {
     "neutral_delta_tolerance_usd": 50.0,
 }
 
+# Keys from PORTFOLIO_RISK_CONFIG that can be overridden from the dashboard/DB
+DB_OVERRIDABLE_KEYS = {
+    "delta_warning_pct", "delta_soft_pct", "delta_hard_pct",
+    "sector_warning_pct", "sector_soft_pct", "sector_hard_pct",
+    "sector_elevated_z_bump", "sector_crowded_z_bump",
+    "neutral_delta_tolerance_usd",
+}
+
+
+def load_risk_config(db_overrides: Dict[str, float] = None) -> Dict[str, Any]:
+    """
+    Return a merged config: defaults + DB overrides.
+    Only keys in DB_OVERRIDABLE_KEYS are accepted from the DB.
+    """
+    cfg = dict(PORTFOLIO_RISK_CONFIG)
+    if db_overrides:
+        for k, v in db_overrides.items():
+            if k in DB_OVERRIDABLE_KEYS:
+                cfg[k] = v
+    return cfg
+
+
 # ──────────────────────────────────────────────
 # SECTOR MAPPING
 # ──────────────────────────────────────────────

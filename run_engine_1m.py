@@ -50,7 +50,7 @@ from event_risk import (
     log_event_risk, Z_EXIT_CAP,
 )
 from strategy.portfolio_risk import (
-    PORTFOLIO_RISK_CONFIG, PAIR_SECTOR,
+    PAIR_SECTOR, load_risk_config,
     compute_portfolio_state, update_projected_state,
     evaluate_candidate_trade,
 )
@@ -489,6 +489,10 @@ class TradingEngine1m:
 
         NEAR_ACTION_BUFFER = 0.3  # Log when z is within this of entry threshold
 
+        # --- PORTFOLIO RISK CONFIG (load DB overrides each cycle) ---
+        _db_risk_overrides = db.get_risk_config(self.con)
+        risk_config = load_risk_config(_db_risk_overrides)
+
         # --- PORTFOLIO RISK STATE (computed once, updated per accepted entry) ---
         _risk_latest_prices = {}
         for sym in self.symbols:
@@ -643,7 +647,7 @@ class TradingEngine1m:
                         "alloc_pct": float(p["alloc_pct"]),
                     }
                     risk_decision = evaluate_candidate_trade(
-                        candidate, portfolio_state, PORTFOLIO_RISK_CONFIG
+                        candidate, portfolio_state, risk_config
                     )
                     effective_alloc = float(p["alloc_pct"]) * risk_decision["final_size_multiplier"]
                     effective_z_entry = z_entry_thresh + risk_decision.get("z_entry_adjustment", 0.0)
