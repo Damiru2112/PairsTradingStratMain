@@ -1164,8 +1164,14 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ----------------------------
+# SECTOR MAPPING (shared with engine)
+# ----------------------------
+from strategy.portfolio_risk import PAIR_SECTOR
+
+# ----------------------------
 # PORTFOLIO SUMMARY
 # ----------------------------
+sector_deltas = {}
 col1, col2 = st.columns(2)
 
 with col1:
@@ -1196,6 +1202,7 @@ with col1:
 
             # Portfolio Delta: sum of (long notional - short notional) across open positions
             portfolio_delta = 0.0
+            sector_deltas = {}
             if not positions.empty:
                 for _, pos in positions.iterrows():
                     try:
@@ -1205,9 +1212,16 @@ with col1:
                         lp2 = float(pos.get("last_price2", 0) or 0)
                         direction = pos.get("direction", "")
                         if direction == "LONG_SPREAD":
-                            portfolio_delta += (lp1 * q1) - (lp2 * q2)
+                            d = (lp1 * q1) - (lp2 * q2)
                         else:  # SHORT_SPREAD
-                            portfolio_delta += (lp2 * q2) - (lp1 * q1)
+                            d = (lp2 * q2) - (lp1 * q1)
+                        portfolio_delta += d
+                        pair = pos.get("pair", "")
+                        sector = PAIR_SECTOR.get(pair, "Unknown")
+                        if sector not in sector_deltas:
+                            sector_deltas[sector] = {"delta": 0.0, "pairs": 0}
+                        sector_deltas[sector]["delta"] += d
+                        sector_deltas[sector]["pairs"] += 1
                     except:
                         pass
 
@@ -1487,6 +1501,25 @@ if not positions.empty:
                 st.rerun()
             except Exception as e:
                 st.error("Failed to save limits: " + str(e))
+
+    # Sector Delta Exposure
+    if sector_deltas:
+        st.markdown("#### Sector Exposure")
+        sector_rows = [
+            {"Sector": s, "Net Delta ($)": v["delta"], "# Pairs": v["pairs"]}
+            for s, v in sector_deltas.items()
+        ]
+        sector_df = pd.DataFrame(sector_rows).sort_values(
+            by="Net Delta ($)", key=abs, ascending=False
+        )
+        st.dataframe(
+            sector_df, use_container_width=True, hide_index=True,
+            column_config={
+                "Sector": st.column_config.TextColumn("Sector"),
+                "Net Delta ($)": st.column_config.NumberColumn("Net Delta", format="$%.2f"),
+                "# Pairs": st.column_config.NumberColumn("# Pairs", format="%d"),
+            }
+        )
 
     st.divider()
     st.markdown("### Manual Actions")

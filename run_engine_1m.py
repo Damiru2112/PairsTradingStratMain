@@ -49,6 +49,11 @@ from event_risk import (
     refresh_event_data, init_event_tables,
     log_event_risk, Z_EXIT_CAP,
 )
+from strategy.portfolio_risk import (
+    PORTFOLIO_RISK_CONFIG, PAIR_SECTOR,
+    compute_portfolio_state, update_projected_state,
+    evaluate_candidate_trade,
+)
 
 # Logger setup
 logging.basicConfig(
@@ -481,9 +486,19 @@ class TradingEngine1m:
         params_map = self._params_as_dict()
         trade_actions = []
         signal_logs = []  # Batch logging
-        
+
         NEAR_ACTION_BUFFER = 0.3  # Log when z is within this of entry threshold
-        
+
+        # --- PORTFOLIO RISK STATE (computed once, updated per accepted entry) ---
+        _risk_latest_prices = {}
+        for sym in self.symbols:
+            _ts, _px = self.cache_1m.get_last(sym)
+            if _px is not None:
+                _risk_latest_prices[sym] = _px
+        portfolio_state = compute_portfolio_state(
+            self.portfolio, _risk_latest_prices, PAIR_SECTOR
+        )
+
         for (sym1, sym2) in self.pairs:
             pair_name = f"{sym1}-{sym2}"
             p = params_map.get(pair_name)
@@ -611,7 +626,40 @@ class TradingEngine1m:
                         "source": "polygon"
                     })
                 
-                # Run fast strategy (with persistence gate for entries)
+                # --- PORTFOLIO RISK OVERLAY (entry admission) ---
+                base_entry_allowed = passed_persistence and not event_entry_blocked
+                effective_alloc = float(p["alloc_pct"])
+                effective_z_entry = z_entry_thresh
+                risk_entry_allowed = base_entry_allowed
+                risk_decision = None
+
+                if base_entry_allowed and not in_position:
+                    candidate = {
+                        "pair": pair_name,
+                        "direction": "SHORT_SPREAD" if z_now > 0 else "LONG_SPREAD",
+                        "price1": price1,
+                        "price2": price2,
+                        "beta": slow.beta_30_weekly if slow else 1.0,
+                        "alloc_pct": float(p["alloc_pct"]),
+                    }
+                    risk_decision = evaluate_candidate_trade(
+                        candidate, portfolio_state, PORTFOLIO_RISK_CONFIG
+                    )
+                    effective_alloc = float(p["alloc_pct"]) * risk_decision["final_size_multiplier"]
+                    effective_z_entry = z_entry_thresh + risk_decision.get("z_entry_adjustment", 0.0)
+
+                    # Re-check z qualification with tightened threshold
+                    passes_risk_z = abs(z_now) >= effective_z_entry
+                    risk_entry_allowed = risk_decision["allow"] and passes_risk_z
+
+                    if not passes_risk_z and risk_decision["allow"]:
+                        log.info(
+                            "[PORTFOLIO_RISK] pair=%s REJECT reason=risk_adjusted_z_not_met "
+                            "z=%.2f effective_z_entry=%.2f",
+                            pair_name, z_now, effective_z_entry,
+                        )
+
+                # Run fast strategy
                 trade_action = process_pair_barclose_fast(
                     self.portfolio,
                     sym1, sym2,
@@ -620,16 +668,26 @@ class TradingEngine1m:
                     bar_ts,
                     beta_30_weekly=slow.beta_30_weekly if slow else 1.0,
                     beta_drift_pct=slow.beta_drift_pct if slow else 0.0,
-                    z_entry=z_entry_thresh,
+                    z_entry=effective_z_entry,
                     z_exit=z_exit_thresh,
                     max_drift_pct=float(p["max_drift_pct"]),
                     max_drift_delta=float(p.get("max_drift_delta", 0)),
-                    alloc_pct=float(p["alloc_pct"]),
-                    entry_allowed=passed_persistence and not event_entry_blocked,
+                    alloc_pct=effective_alloc,
+                    entry_allowed=risk_entry_allowed,
                 )
-                
+
                 if trade_action:
                     trade_actions.append(trade_action)
+                    # Update projected portfolio state for next candidate in this cycle
+                    if trade_action.get("action") == "ENTRY" and risk_decision is not None:
+                        portfolio_state = update_projected_state(
+                            portfolio_state,
+                            {
+                                "candidate_delta_usd": risk_decision.get("candidate_delta_usd", 0.0),
+                                "candidate_gross_usd": risk_decision.get("candidate_gross_usd", 0.0),
+                                "sector": risk_decision.get("sector", "Unknown"),
+                            },
+                        )
                     
             except Exception as e:
                 log.error(f"Strategy fail {pair_name}: {e}")
