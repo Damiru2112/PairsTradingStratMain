@@ -1,165 +1,457 @@
 # Pairs Trading System
-Production-Deployed Statistical Arbitrage Engine (US Equities)
+### Production-Deployed Statistical Arbitrage Engine (US Equities)
 
-Live Monitoring Dashboard: http://170.64.216.29:8501/
+**Live Monitoring Dashboard:**  
+http://uspairs.dr2112.com
 
-Check Screenshot folder for a quick view of the dashboard
-
----
-
-## Overview
-
-This project is a fully deployed statistical arbitrage system that trades mean reversion across 50+ US equity pairs.
-
-The system runs continuously on a VPS, evaluates signals every minute during NYSE hours, simulates execution via a stateful portfolio engine, and exposes a real-time monitoring dashboard.
-
-It is designed as a production trading system — not a notebook prototype.
+📸 **Screenshots:**  
+See the `/screenshots` folder for a quick view of the dashboard.
 
 ---
 
-## Strategy Design
+# Overview
 
-### Spread Model
+This project is a **fully deployed statistical arbitrage system** that trades mean reversion across **50+ US equity pairs**.
 
-Spread is defined as a price ratio:
+The system:
 
-    spread = price_1 / price_2
+- Runs continuously on a **VPS**
+- Evaluates signals **every minute during NYSE hours**
+- Simulates execution via a **stateful portfolio engine**
+- Exposes a **real-time monitoring dashboard**
+
+It is designed as a **production trading system — not a notebook prototype.**
+
+---
+
+# System Architecture
+
+```
+            Polygon.io
+                 │
+                 ▼
+        Historical Data Loader
+                 │
+                 ▼
+      ┌─────────────────────┐
+      │   Analytics Layer   │
+      │ (15m statistical)   │
+      └─────────────────────┘
+                 │
+                 ▼
+      ┌─────────────────────┐
+      │   Strategy Engine   │
+      │  (1m signal logic)  │
+      └─────────────────────┘
+                 │
+                 ▼
+      ┌─────────────────────┐
+      │ Portfolio Simulator │
+      │  Position Manager   │
+      └─────────────────────┘
+                 │
+                 ▼
+        SQLite Trading DB
+          │            │
+          ▼            ▼
+   Streamlit Dashboard  Telegram Alerts
+```
+
+---
+
+# Strategy Design
+
+## Spread Model
+
+Spread is defined as a **price ratio**:
+
+```python
+spread = price_1 / price_2
+```
 
 Z-score:
 
-    z = (spread - rolling_30d_mean) / rolling_30d_std
+```python
+z = (spread - rolling_30d_mean) / rolling_30d_std
+```
 
-- 30 trading day lookback
-- Weekly rebalance of slow statistics (Fridays only)
-- Forward-filled intra-week
-- Lookahead bias removed via shift(1)
+Features:
 
----
-
-### Entry & Exit
-
-Entry:
-- |z| ≥ 3.5 (configurable per pair)
-- 2-of-3 consecutive 1-minute bars must exceed threshold (persistence filter)
-
-Exit:
-- |z| ≤ 1.0 (configurable)
-- Exit threshold dynamically widened near events (capped at 1.5)
-
-Re-entry:
-- No cooldown
+- **30 trading day lookback**
+- **Weekly rebalance of slow statistics (Fridays only)**
+- Statistics **forward-filled intra-week**
+- **Lookahead bias removed via `shift(1)`**
 
 ---
 
-### Hedge Ratio
+## Entry & Exit Rules
+
+### Entry
+
+```
+|z| ≥ 3.5
+```
+
+Additional signal filter:
+
+- **2-of-3 consecutive 1-minute bars** must exceed the threshold
+- Reduces microstructure noise and false signals
+
+### Exit
+
+```
+|z| ≤ 1.0
+```
+
+Dynamic widening near events:
+
+- Earnings multiplier
+- Dividend multiplier
+- Macro event multiplier
+
+Maximum exit threshold cap:
+
+```
+|z| ≤ 1.5
+```
+
+### Re-entry
+
+- **No cooldown**
+- New signals allowed immediately after exit
+
+---
+
+# Hedge Ratio
 
 Two-layer hedge system:
 
-1. Direct beta (instantaneous ratio, updated every bar)
-2. 30-day rolling beta (weekly rebalance, forward-filled)
+### 1️⃣ Direct Beta
+- Instantaneous hedge ratio
+- Updated **every bar**
 
-This reduces hedge noise while preserving statistical calibration.
+### 2️⃣ Rolling Beta
+- **30-day rolling regression**
+- Rebalanced **weekly**
+- Forward-filled intra-week
+
+Purpose:
+
+- Reduce hedge noise
+- Preserve statistical calibration
 
 ---
 
-### Position Sizing
+# Position Sizing
 
-Beta-adjusted dollar-neutral:
+Beta-adjusted **dollar-neutral sizing**:
 
-    capital_per_trade = equity * alloc_pct
-    leg1 = capital_per_trade / (1 + beta)
-    leg2 = leg1 * beta
+```python
+capital_per_trade = equity * alloc_pct
+
+leg1 = capital_per_trade / (1 + beta)
+leg2 = leg1 * beta
+```
+
+Default parameters:
+
+| Parameter | Value |
+|---|---|
+| Starting Equity | $100,000 |
+| Allocation per trade | 6.5% |
+
+---
+
+# Transaction Cost Model
+
+A **realistic four-component cost model** is applied to every trade.
+
+## 1. Broker Commission (IBKR Fixed)
+
+```
+$0.005 per share
+$1.00 minimum per leg
+```
+
+Applied to **all four executions** in a round-trip pairs trade.
+
+---
+
+## 2. Regulatory Fees (Sell-Side Only)
+
+FINRA TAF:
+
+```
+$0.000195 per share sold
+Cap: $9.79 per trade
+```
+
+SEC Section 31:
+
+```
+$0.00 per dollar sold
+(Current rate as of May 2025)
+```
+
+Applied to **the two sell executions**.
+
+---
+
+## 3. Short Borrow Cost
 
 Default:
-- Starting equity: $100,000
-- Allocation: 6.5% per trade
+
+```
+0.5% annual
+```
+
+Accrued daily on short-leg notional.
+
+Calculation:
+
+```python
+borrow_cost = short_notional * rate * days_held / 365
+```
 
 ---
 
-## Risk Management
+## 4. Slippage
 
-Multi-layered protection:
+Half-spread estimate:
 
-- Beta drift entry filter (6.5%)
-- Beta drift in-position stop (10%)
-- Earnings multiplier (1.5x exit widening)
-- Dividend multiplier (1.3x)
-- Macro event multiplier (1.2x)
-- Exit threshold cap (1.5)
+```
+1 basis point per execution
+```
+
+```python
+slippage = notional * 1 / 10000
+```
+
+---
+
+## Cost Impact
+
+- All costs deducted **at trade close**
+- Unrealized P&L reflects **estimated round-trip costs**
+
+Trade records store:
+
+- Commission
+- Regulatory fees
+- Borrow cost
+- Slippage
+
+for full **cost attribution**.
+
+---
+
+# Risk Management
+
+The system implements **multi-layered risk protection**:
+
+- Beta drift entry filter (**6.5%**)
+- Beta drift in-position stop (**10%**)
+- Earnings event multiplier (**1.5×**)
+- Dividend multiplier (**1.3×**)
+- Macro event multiplier (**1.2×**)
+- Exit threshold cap (**1.5**)
 - Market-hours gating
 - One position per pair
-- Persistence filter for false signal reduction
+- Persistence filter
 - Data staleness detection
 - Engine heartbeat monitoring
 - Telegram alert throttling
 
-The system adjusts behavior around event risk rather than blindly disabling trading.
+Rather than disabling trading around events, the system **adapts risk dynamically**.
 
 ---
 
-## Architecture
+# Performance Tracking
 
-Dual-layer signal architecture:
+## Equity Curve
 
-Slow analytics layer (15m bars)
-- Computes rolling mean, std, beta
-- Rebalanced weekly
-- Cached for reuse
+Equity snapshots:
 
-Fast execution layer (1m bars)
-- Evaluates signals every 60 seconds
-- Applies risk filters
-- Executes simulated trades
-- Persists state to database
+- **Every 15 minutes intraday**
+- **End-of-day mark-to-market equity**
 
-This preserves statistical stability while enabling responsive execution.
+Includes:
+
+- Realized P&L
+- Unrealized P&L
 
 ---
 
-## Production Infrastructure
+## Sharpe Ratio
 
-- Deployed on DigitalOcean VPS (Ubuntu)
-- systemd-managed services
-- SQLite (WAL mode) for concurrent engine/dashboard access
+Computed from **daily MTM equity returns**:
+
+```python
+Sharpe = mean(daily_returns) / std(daily_returns) * sqrt(252)
+```
+
+---
+
+## Dashboard Metrics
+
+The monitoring dashboard displays:
+
+- Total Trades
+- Win Rate
+- Sharpe Ratio
+- Average P&L per Trade
+- Average Hold Time
+- Total Fees Paid
+
+---
+
+# Telegram Notifications
+
+Real-time alerts include:
+
+### Entry Alerts
+
+- Pair
+- Z-score
+- Position sizing
+
+### Exit Alerts
+
+- Net P&L
+- Fee breakdown
+- Holding period
+
+### End-of-Day Report
+
+- Realized P&L
+- Total fees paid
+- Equity
+- Win/loss count
+
+---
+
+# Architecture
+
+The engine uses a **dual-layer signal architecture**.
+
+## Slow Analytics Layer (15m Bars)
+
+Responsible for:
+
+- Rolling mean
+- Rolling standard deviation
+- Hedge ratio estimation
+
+Characteristics:
+
+- Weekly rebalance
+- Cached computations
+
+---
+
+## Fast Execution Layer (1m Bars)
+
+Responsible for:
+
+- Signal evaluation
+- Risk filter application
+- Trade simulation
+- Portfolio updates
+
+Signals evaluated **every 60 seconds**.
+
+---
+
+# Production Infrastructure
+
+Deployment stack:
+
+| Component | Description |
+|---|---|
+| VPS | DigitalOcean (Ubuntu) |
+| Services | systemd-managed processes |
+| Database | SQLite (WAL mode) |
+| Dashboard | Streamlit terminal UI |
+| Alerts | Telegram bot |
+| Deployment | GitHub → VPS auto-pull |
+
+Features:
+
 - Crash recovery via persistent state
-- Event calendar integration (earnings/dividends/macro)
-- Real-time Streamlit dashboard
-- Modular separation: analytics → strategy → execution → persistence → monitoring
+- Concurrent engine/dashboard database access
+- Event calendar integration
+- Modular architecture
+
+```
+analytics → strategy → execution → persistence → monitoring
+```
 
 ---
 
-## Data
+# Data Sources
 
-- Polygon.io (1m + 15m OHLCV)
-- Earnings & dividends integration
-- 75-day historical warmup
-- Append-only CSV storage + SQLite persistence
+Market Data:
+
+- **Polygon.io**
+- 1-minute OHLCV
+- 15-minute OHLCV
+
+Additional datasets:
+
+- Earnings calendar
+- Dividend events
+
+Historical warmup:
+
+```
+75 trading days
+```
+
+Storage:
+
+- Append-only CSV history
+- SQLite trading database
 
 ---
 
-## Scale & Performance
+# Scale & Performance
 
-- 50+ concurrent pairs
-- Medium-frequency (1-minute evaluation)
-- Lightweight memory footprint
-- Designed for robustness rather than HFT latency
+The engine currently supports:
+
+- **50+ concurrent pairs**
+- **1-minute signal evaluation**
+- Medium-frequency stat arb
+
+Design focus:
+
+- **Robustness**
+- **Operational reliability**
+- **Research reproducibility**
+
+(Not ultra-low-latency HFT)
 
 ---
 
-## What Differentiates This System
+# What Differentiates This System
 
-- Weekly hedge rebalance to reduce intra-week beta noise
-- Explicit lookahead bias prevention
-- Event-aware dynamic exit thresholds
-- Beta drift enforcement both at entry and during hold
+Key design features:
+
+- Weekly hedge rebalance to reduce beta noise
+- Explicit **lookahead bias prevention**
+- Event-aware **dynamic exit thresholds**
+- Beta drift enforcement during entry and holding
 - Persistence filter to reduce microstructure noise
-- Real-time operational monitoring dashboard
-- Full production deployment pipeline
+- Full **four-component transaction cost model**
+- Mark-to-market equity with proper Sharpe calculation
+- Real-time monitoring dashboard
+- Production deployment infrastructure
 
-This project bridges research logic and production trading infrastructure.
+This project bridges **research logic and production trading systems.**
 
 ---
 
-## Disclaimer
+# Disclaimer
 
-For educational and research purposes only.
+This project is provided **for educational and research purposes only**.
+
+It does **not constitute investment advice** and should not be used for live trading without proper risk controls and regulatory compliance.
