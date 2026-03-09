@@ -1524,33 +1524,31 @@ if not positions.empty:
     # --- PORTFOLIO RISK CONTROLS ---
     st.markdown("#### Portfolio Risk Controls")
     _rc = db.get_risk_config(con)
-    rc_warn = _rc.get("delta_warning_pct", 0.015)
-    rc_soft = _rc.get("delta_soft_pct", 0.020)
-    rc_hard = _rc.get("delta_hard_pct", 0.030)
-    rc_sec_warn = _rc.get("sector_warning_pct", 0.20)
-    rc_sec_soft = _rc.get("sector_soft_pct", 0.25)
-    rc_sec_hard = _rc.get("sector_hard_pct", 0.30)
 
-    rc1, rc2 = st.columns(2)
-    with rc1:
-        st.markdown("**Delta Thresholds**")
-        new_warn = st.slider("Warning %", 0.5, 5.0, rc_warn * 100, 0.1, key="rc_d_warn", format="%.1f%%") / 100
-        new_soft = st.slider("Soft Limit %", 0.5, 5.0, rc_soft * 100, 0.1, key="rc_d_soft", format="%.1f%%") / 100
-        new_hard = st.slider("Hard Limit %", 1.0, 10.0, rc_hard * 100, 0.1, key="rc_d_hard", format="%.1f%%") / 100
-    with rc2:
-        st.markdown("**Sector Thresholds**")
-        new_sec_warn = st.slider("Warning %", 5.0, 40.0, rc_sec_warn * 100, 1.0, key="rc_s_warn", format="%.0f%%") / 100
-        new_sec_soft = st.slider("Soft Limit %", 10.0, 50.0, rc_sec_soft * 100, 1.0, key="rc_s_soft", format="%.0f%%") / 100
-        new_sec_hard = st.slider("Hard Limit %", 15.0, 60.0, rc_sec_hard * 100, 1.0, key="rc_s_hard", format="%.0f%%") / 100
+    _rc_data = pd.DataFrame([
+        {"Param": "Delta Warning %", "key": "delta_warning_pct",  "Value": _rc.get("delta_warning_pct", 0.015) * 100},
+        {"Param": "Delta Soft %",    "key": "delta_soft_pct",     "Value": _rc.get("delta_soft_pct", 0.020) * 100},
+        {"Param": "Delta Hard %",    "key": "delta_hard_pct",     "Value": _rc.get("delta_hard_pct", 0.030) * 100},
+        {"Param": "Sector Warning %","key": "sector_warning_pct", "Value": _rc.get("sector_warning_pct", 0.20) * 100},
+        {"Param": "Sector Soft %",   "key": "sector_soft_pct",    "Value": _rc.get("sector_soft_pct", 0.25) * 100},
+        {"Param": "Sector Hard %",   "key": "sector_hard_pct",    "Value": _rc.get("sector_hard_pct", 0.30) * 100},
+    ])
+    _rc_orig = _rc_data["Value"].tolist()
 
-    # Save if any value changed
+    edited_rc = st.data_editor(
+        _rc_data[["Param", "Value"]], use_container_width=True, hide_index=True,
+        key="risk_config_editor",
+        column_config={
+            "Param": st.column_config.TextColumn("Parameter", disabled=True),
+            "Value": st.column_config.NumberColumn("Value (%)", min_value=0.1, max_value=100.0, step=0.1, format="%.1f"),
+        },
+    )
+
     _rc_updates = {}
-    if abs(new_warn - rc_warn) > 1e-6: _rc_updates["delta_warning_pct"] = new_warn
-    if abs(new_soft - rc_soft) > 1e-6: _rc_updates["delta_soft_pct"] = new_soft
-    if abs(new_hard - rc_hard) > 1e-6: _rc_updates["delta_hard_pct"] = new_hard
-    if abs(new_sec_warn - rc_sec_warn) > 1e-6: _rc_updates["sector_warning_pct"] = new_sec_warn
-    if abs(new_sec_soft - rc_sec_soft) > 1e-6: _rc_updates["sector_soft_pct"] = new_sec_soft
-    if abs(new_sec_hard - rc_sec_hard) > 1e-6: _rc_updates["sector_hard_pct"] = new_sec_hard
+    for i, row in edited_rc.iterrows():
+        new_val = row["Value"]
+        if abs(new_val - _rc_orig[i]) > 0.01:
+            _rc_updates[_rc_data.iloc[i]["key"]] = new_val / 100.0
     if _rc_updates:
         db.save_risk_config(con, _rc_updates)
         st.toast(f"Risk config updated: {', '.join(_rc_updates.keys())}")
