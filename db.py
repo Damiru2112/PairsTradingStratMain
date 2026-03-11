@@ -270,6 +270,18 @@ def init_db(con: sqlite3.Connection) -> None:
         );
     """)
 
+    # Access Requests (from login page "Request Access" form)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS access_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            description TEXT,
+            status TEXT DEFAULT 'PENDING',
+            created_at TEXT NOT NULL
+        );
+    """)
+
 # ==============================================================================
 # WRITERS
 # ==============================================================================
@@ -283,6 +295,19 @@ def add_manual_command(con: sqlite3.Connection, command: str, payload: dict = No
             INSERT INTO manual_commands (command, payload, status, created_at)
             VALUES (?, ?, 'PENDING', ?)
         """, (command, payload_json, created_at))
+
+def add_access_request(con: sqlite3.Connection, name: str, email: str, description: str) -> None:
+    created_at = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            INSERT INTO access_requests (name, email, description, status, created_at)
+            VALUES (?, ?, ?, 'PENDING', ?)
+        """, (name, email, description, created_at))
+
+def get_access_requests(con: sqlite3.Connection, status: str = None) -> pd.DataFrame:
+    if status:
+        return pd.read_sql_query("SELECT * FROM access_requests WHERE status = ? ORDER BY created_at DESC", con, params=(status,))
+    return pd.read_sql_query("SELECT * FROM access_requests ORDER BY created_at DESC", con)
 
 def mark_command_processed(con: sqlite3.Connection, command_id: int, status: str = "PROCESSED") -> None:
     processed_at = datetime.now(timezone.utc).isoformat()

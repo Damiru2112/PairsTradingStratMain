@@ -14,6 +14,8 @@ ENV/
 
 # Environment Variables / Secrets
 .env
+auth_users.json
+.last_pw_rotation
 
 # Logs
 *.log

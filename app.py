@@ -14,6 +14,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # Centralized DB Access
 import db
+import auth
 
 # ----------------------------
 # BLOOMBERG CHART TEMPLATE
@@ -75,6 +76,14 @@ def bb_layout(**overrides):
 # ----------------------------
 st.set_page_config(page_title="Pairs Trading Dashboard", layout="wide", page_icon="📈",
                    initial_sidebar_state="collapsed")
+
+# ----------------------------
+# AUTHENTICATION GATE
+# ----------------------------
+if not auth.render_login_page():
+    st.stop()
+auth.render_auth_sidebar()
+
 st_autorefresh(interval=15_000, key="auto_refresh")  # 15s refresh
 
 # ----------------------------
@@ -1098,6 +1107,13 @@ daily_df = db.get_daily_performance(con, limit=30)
 # ----------------------------
 # RENDER ENGINE HEALTH STRIP
 # ----------------------------
+_pw_age = auth.get_time_since_pw_rotation() if auth.is_admin() else None
+_pw_badge_html = ""
+if _pw_age:
+    _pw_days = int(_pw_age.split("d")[0]) if "d" in _pw_age else 0
+    _pw_color = "red" if _pw_days >= 10 else ("orange" if _pw_days >= 7 else "green")
+    _pw_badge_html = f'<span class="engine-badge"><span class="badge-dot" style="background-color:{_pw_color}"></span> PW Age: {_pw_age}</span>'
+
 st.markdown(f"""
     <style>
     .engine-header {{
@@ -1159,6 +1175,7 @@ st.markdown(f"""
             <span class="engine-badge"><span class="badge-dot" style="background-color:{data_color}"></span> Data: {data_status}</span>
             <span class="engine-badge"><span class="badge-dot" style="background-color:{risk_color}"></span> {risk_label}</span>
             <span class="engine-badge"><span class="badge-dot" style="background-color:{alerts_color}"></span> Alerts: {alerts_status}</span>
+            {_pw_badge_html}
         </div>
     </div>
 """, unsafe_allow_html=True)
@@ -1523,53 +1540,59 @@ if not positions.empty:
 
     # --- PORTFOLIO RISK CONTROLS ---
     st.markdown("#### Portfolio Risk Controls")
-    _rc = db.get_risk_config(con)
+    if auth.is_admin():
+        _rc = db.get_risk_config(con)
 
-    _rc_data = pd.DataFrame([
-        {"Param": "Delta Warning %", "key": "delta_warning_pct",  "Value": _rc.get("delta_warning_pct", 0.015) * 100},
-        {"Param": "Delta Soft %",    "key": "delta_soft_pct",     "Value": _rc.get("delta_soft_pct", 0.020) * 100},
-        {"Param": "Delta Hard %",    "key": "delta_hard_pct",     "Value": _rc.get("delta_hard_pct", 0.030) * 100},
-        {"Param": "Sector Warning %","key": "sector_warning_pct", "Value": _rc.get("sector_warning_pct", 0.20) * 100},
-        {"Param": "Sector Soft %",   "key": "sector_soft_pct",    "Value": _rc.get("sector_soft_pct", 0.25) * 100},
-        {"Param": "Sector Hard %",   "key": "sector_hard_pct",    "Value": _rc.get("sector_hard_pct", 0.30) * 100},
-    ])
-    _rc_orig = _rc_data["Value"].tolist()
+        _rc_data = pd.DataFrame([
+            {"Param": "Delta Warning %", "key": "delta_warning_pct",  "Value": _rc.get("delta_warning_pct", 0.015) * 100},
+            {"Param": "Delta Soft %",    "key": "delta_soft_pct",     "Value": _rc.get("delta_soft_pct", 0.020) * 100},
+            {"Param": "Delta Hard %",    "key": "delta_hard_pct",     "Value": _rc.get("delta_hard_pct", 0.030) * 100},
+            {"Param": "Sector Warning %","key": "sector_warning_pct", "Value": _rc.get("sector_warning_pct", 0.20) * 100},
+            {"Param": "Sector Soft %",   "key": "sector_soft_pct",    "Value": _rc.get("sector_soft_pct", 0.25) * 100},
+            {"Param": "Sector Hard %",   "key": "sector_hard_pct",    "Value": _rc.get("sector_hard_pct", 0.30) * 100},
+        ])
+        _rc_orig = _rc_data["Value"].tolist()
 
-    edited_rc = st.data_editor(
-        _rc_data[["Param", "Value"]], use_container_width=True, hide_index=True,
-        key="risk_config_editor",
-        column_config={
-            "Param": st.column_config.TextColumn("Parameter", disabled=True),
-            "Value": st.column_config.NumberColumn("Value (%)", min_value=0.1, max_value=100.0, step=0.1, format="%.1f"),
-        },
-    )
+        edited_rc = st.data_editor(
+            _rc_data[["Param", "Value"]], use_container_width=True, hide_index=True,
+            key="risk_config_editor",
+            column_config={
+                "Param": st.column_config.TextColumn("Parameter", disabled=True),
+                "Value": st.column_config.NumberColumn("Value (%)", min_value=0.1, max_value=100.0, step=0.1, format="%.1f"),
+            },
+        )
 
-    _rc_updates = {}
-    for i, row in edited_rc.iterrows():
-        new_val = row["Value"]
-        if abs(new_val - _rc_orig[i]) > 0.01:
-            _rc_updates[_rc_data.iloc[i]["key"]] = new_val / 100.0
-    if _rc_updates:
-        db.save_risk_config(con, _rc_updates)
-        st.toast(f"Risk config updated: {', '.join(_rc_updates.keys())}")
+        _rc_updates = {}
+        for i, row in edited_rc.iterrows():
+            new_val = row["Value"]
+            if abs(new_val - _rc_orig[i]) > 0.01:
+                _rc_updates[_rc_data.iloc[i]["key"]] = new_val / 100.0
+        if _rc_updates:
+            db.save_risk_config(con, _rc_updates)
+            st.toast(f"Risk config updated: {', '.join(_rc_updates.keys())}")
+    else:
+        st.caption("Login as admin to modify risk controls.")
 
     st.divider()
     st.markdown("### Manual Actions")
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        pair_to_close = st.selectbox("Select Position to Close", options=positions["pair"].tolist(), key="manual_close_select")
-    with col2:
-        st.write("")
-        st.write("")
-        if st.button("Close Position", type="primary", use_container_width=True):
-            if pair_to_close:
-                try:
-                    db.add_manual_command(con, "CLOSE_POSITION", {"pair": pair_to_close})
-                    st.success(f"Close request sent for {pair_to_close}")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to send close request: {e}")
+    if auth.is_admin():
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            pair_to_close = st.selectbox("Select Position to Close", options=positions["pair"].tolist(), key="manual_close_select")
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("Close Position", type="primary", use_container_width=True):
+                if pair_to_close:
+                    try:
+                        db.add_manual_command(con, "CLOSE_POSITION", {"pair": pair_to_close})
+                        st.success(f"Close request sent for {pair_to_close}")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to send close request: {e}")
+    else:
+        st.caption("Login as admin to perform manual actions.")
 
 else:
     st.caption("No open positions.")
@@ -2072,76 +2095,84 @@ st.divider()
 # PARAMETER EDITOR (above Pair Analysis)
 # ----------------------------
 st.subheader("Configuration (Pair Parameters)")
-if params.empty:
-    st.warning("No parameters found. Please run seed script or engine init.")
+if not auth.is_admin():
+    # Guest: show read-only table
+    if not params.empty:
+        st.dataframe(params.sort_values("pair"), use_container_width=True, hide_index=True)
+    else:
+        st.warning("No parameters found.")
+    st.caption("Login as admin to edit parameters.")
 else:
-    # Prepare for editor
-    p_edit = params.copy()
-    # Ensure enabled is bool for checkbox
-    if "enabled" in p_edit.columns:
-        p_edit["enabled"] = p_edit["enabled"].astype(int).astype(bool)
+    if params.empty:
+        st.warning("No parameters found. Please run seed script or engine init.")
+    else:
+        # Prepare for editor
+        p_edit = params.copy()
+        # Ensure enabled is bool for checkbox
+        if "enabled" in p_edit.columns:
+            p_edit["enabled"] = p_edit["enabled"].astype(int).astype(bool)
 
-    edited_df = st.data_editor(
-        p_edit.sort_values("pair"),
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        column_config={
-            "enabled": st.column_config.CheckboxColumn("Enabled", help="Toggle trading for this pair"),
-            "max_drift_pct": st.column_config.NumberColumn("Beta Drift (%)", help="Max allowed % deviation from entry Beta"),
-            "max_drift_delta": st.column_config.NumberColumn("Delta Drift ($)", help="Max allowed $ deviation (unhedged exposure)")
-        }
-    )
-
-    if st.button("Save Changes"):
-        try:
-            # Convert back to int for DB
-            to_save = edited_df.copy()
-            to_save["enabled"] = to_save["enabled"].astype(int)
-
-            db.upsert_pair_params(con, to_save)
-            con.commit()  # Explicit commit to ensure WAL is flushed
-            st.success("Configuration saved! Reloading...")
-            time.sleep(0.5)  # Brief visual feedback
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed to save settings: {e}")
-
-# ----------------------------
-# Bulk Update Section
-# ----------------------------
-st.divider()
-st.subheader("Bulk Parameter Update")
-st.info("Update a specific parameter for **ALL enabled pairs** at once.")
-
-with st.form("bulk_update_form"):
-    col_b1, col_b2, col_b3 = st.columns(3)
-
-    with col_b1:
-        # Only allow bulk update for numeric risk params
-        bulk_param = st.selectbox(
-            "Parameter",
-            ["z_entry", "z_exit", "max_drift_pct", "max_drift_delta", "alloc_pct"]
+        edited_df = st.data_editor(
+            p_edit.sort_values("pair"),
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            column_config={
+                "enabled": st.column_config.CheckboxColumn("Enabled", help="Toggle trading for this pair"),
+                "max_drift_pct": st.column_config.NumberColumn("Beta Drift (%)", help="Max allowed % deviation from entry Beta"),
+                "max_drift_delta": st.column_config.NumberColumn("Delta Drift ($)", help="Max allowed $ deviation (unhedged exposure)")
+            }
         )
 
-    with col_b2:
-        bulk_val = st.number_input("New Value", value=0.0, step=0.1, format="%.2f")
+        if st.button("Save Changes"):
+            try:
+                # Convert back to int for DB
+                to_save = edited_df.copy()
+                to_save["enabled"] = to_save["enabled"].astype(int)
 
-    with col_b3:
-        st.write("") # Spacer
-        st.write("") # Spacer
-        bulk_submit = st.form_submit_button("Apply to All Enabled Pairs")
+                db.upsert_pair_params(con, to_save)
+                con.commit()  # Explicit commit to ensure WAL is flushed
+                st.success("Configuration saved! Reloading...")
+                time.sleep(0.5)  # Brief visual feedback
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save settings: {e}")
 
-    if bulk_submit:
-        try:
-            with con:
-                con.execute(f"UPDATE pair_params SET {bulk_param} = ? WHERE enabled = 1", (bulk_val,))
-                con.commit()
-            st.success(f"Updated {bulk_param} to {bulk_val} for all enabled pairs!")
-            time.sleep(1.0)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Bulk update failed: {e}")
+    # ----------------------------
+    # Bulk Update Section
+    # ----------------------------
+    st.divider()
+    st.subheader("Bulk Parameter Update")
+    st.info("Update a specific parameter for **ALL enabled pairs** at once.")
+
+    with st.form("bulk_update_form"):
+        col_b1, col_b2, col_b3 = st.columns(3)
+
+        with col_b1:
+            # Only allow bulk update for numeric risk params
+            bulk_param = st.selectbox(
+                "Parameter",
+                ["z_entry", "z_exit", "max_drift_pct", "max_drift_delta", "alloc_pct"]
+            )
+
+        with col_b2:
+            bulk_val = st.number_input("New Value", value=0.0, step=0.1, format="%.2f")
+
+        with col_b3:
+            st.write("") # Spacer
+            st.write("") # Spacer
+            bulk_submit = st.form_submit_button("Apply to All Enabled Pairs")
+
+        if bulk_submit:
+            try:
+                with con:
+                    con.execute(f"UPDATE pair_params SET {bulk_param} = ? WHERE enabled = 1", (bulk_val,))
+                    con.commit()
+                st.success(f"Updated {bulk_param} to {bulk_val} for all enabled pairs!")
+                time.sleep(1.0)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Bulk update failed: {e}")
 
 st.divider()
 
