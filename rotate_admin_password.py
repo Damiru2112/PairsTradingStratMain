@@ -7,7 +7,7 @@ It will:
   1. Generate a new random password
   2. Update local auth_users.json
   3. SSH into the VPS and update the remote auth_users.json
-  4. Update ~/Desktop/dashboard_credentials.py
+  4. Update ~/Desktop/PairsSystem Scripts/dashboard_credentials.command
   5. Record the rotation timestamp (for the dashboard timer)
 
 Usage:
@@ -33,7 +33,7 @@ VPS_HOST = "170.64.216.29"
 VPS_USER = "trader"
 VPS_PROJECT = "/home/trader/PairsTrading"
 VPS_AUTH_FILE = f"{VPS_PROJECT}/auth_users.json"
-CREDENTIALS_FILE = Path.home() / "Desktop" / "dashboard_credentials.py"
+CREDENTIALS_FILE = Path.home() / "Desktop" / "PairsSystem Scripts" / "dashboard_credentials.command"
 ROTATION_TIMESTAMP_FILE = Path(__file__).parent / ".last_pw_rotation"
 
 
@@ -78,47 +78,43 @@ def update_vps(new_users_json: str) -> bool:
 
 
 def update_credentials_file(new_password: str) -> None:
-    """Rewrite the desktop credentials file with the new admin password."""
+    """Rewrite the desktop .command file with the new admin password."""
     today = datetime.now().strftime("%Y-%m-%d")
-    content = f'''"""
-Pairs Trading Dashboard - Login Credentials
-=============================================
-Last updated: {today}
+    content = f'''#!/bin/bash
+# Double-click this file to view Pairs Trading Dashboard credentials
+# Last updated: {today}
 
-KEEP THIS FILE PRIVATE. Do not share or commit to git.
-The 'admin' account password is rotated by running:
-    python3 rotate_admin_password.py
-"""
-
-credentials = {{
-    "DRan": {{
-        "password": "AmysAngels",
-        "role": "admin",
-        "note": "Permanent password",
-    }},
-    "FBurg": {{
-        "password": "AmysAngels",
-        "role": "admin",
-        "note": "Permanent password",
-    }},
-    "admin": {{
-        "password": "{new_password}",
-        "role": "admin",
-        "note": "Last changed {today}",
-    }},
-}}
-
-if __name__ == "__main__":
-    print("=== Dashboard Credentials ===")
-    print()
-    for user, info in credentials.items():
-        print(f"  Username: {{user}}")
-        print(f"  Password: {{info[\'password\']}}")
-        print(f"  Role:     {{info[\'role\']}}")
-        print(f"  Note:     {{info[\'note\']}}")
-        print()
+clear
+echo "==========================================="
+echo "  Pairs Trading Dashboard - Credentials"
+echo "  Last updated: {today}"
+echo "==========================================="
+echo ""
+echo "  Username: DRan"
+echo "  Password: AmysAngels"
+echo "  Role:     admin"
+echo "  Note:     Permanent password"
+echo ""
+echo "  ---"
+echo ""
+echo "  Username: FBurg"
+echo "  Password: AmysAngels"
+echo "  Role:     admin"
+echo "  Note:     Permanent password"
+echo ""
+echo "  ---"
+echo ""
+echo "  Username: admin"
+echo "  Password: {new_password}"
+echo "  Role:     admin"
+echo "  Note:     Last changed {today}"
+echo ""
+echo "==========================================="
+echo ""
+read -p "Press Enter to close..."
 '''
     CREDENTIALS_FILE.write_text(content)
+    CREDENTIALS_FILE.chmod(0o700)
 
 
 def save_rotation_timestamp() -> None:

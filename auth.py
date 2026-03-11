@@ -169,6 +169,62 @@ def login_as_guest() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Access request notifications
+# ---------------------------------------------------------------------------
+ADMIN_EMAIL = "ranasinghedamiru@gmail.com"
+
+
+def _notify_access_request(name: str, email: str, description: str) -> None:
+    """Send notification to admin when someone requests access."""
+    msg = (
+        f"Dashboard Access Request\n"
+        f"Name: {name}\n"
+        f"Email: {email}\n"
+        f"Reason: {description or 'N/A'}"
+    )
+
+    # 1. Telegram notification (instant)
+    try:
+        from telegram_notifier import notifier
+        notifier.notify(f"<b>New Access Request</b>\n\n"
+                        f"<b>Name:</b> {name}\n"
+                        f"<b>Email:</b> {email}\n"
+                        f"<b>Reason:</b> {description or 'N/A'}")
+    except Exception:
+        pass  # Telegram not configured or unavailable
+
+    # 2. Email notification
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        import os as _os
+
+        # Load .env if not already in environment
+        from telegram_notifier import load_env
+        load_env()
+
+        smtp_user = _os.environ.get("SMTP_USER", "")
+        smtp_pass = _os.environ.get("SMTP_PASSWORD", "")
+        if smtp_user and smtp_pass:
+            email_msg = MIMEText(
+                f"Someone has requested access to the Pairs Trading Dashboard.\n\n"
+                f"Name: {name}\n"
+                f"Email: {email}\n"
+                f"Reason: {description or 'N/A'}\n\n"
+                f"Log in as admin to review, then email them their credentials."
+            )
+            email_msg["Subject"] = f"Dashboard Access Request from {name}"
+            email_msg["From"] = smtp_user
+            email_msg["To"] = ADMIN_EMAIL
+
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(smtp_user, smtp_pass)
+                server.send_message(email_msg)
+    except Exception:
+        pass  # Email not configured or failed
+
+
+# ---------------------------------------------------------------------------
 # Login page UI
 # ---------------------------------------------------------------------------
 
@@ -245,6 +301,10 @@ def render_login_page() -> bool:
                             _con = _db.connect_db()
                             _db.init_db(_con)
                             _db.add_access_request(_con, req_name, req_email, req_desc)
+
+                            # Notify admin via email + Telegram
+                            _notify_access_request(req_name, req_email, req_desc)
+
                             st.success(
                                 "Request submitted! You will receive an email "
                                 "with your login credentials once approved."

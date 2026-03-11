@@ -1181,6 +1181,18 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ----------------------------
+# USER BAR (logged-in user + logout)
+# ----------------------------
+_ub_left, _ub_right = st.columns([6, 1])
+with _ub_left:
+    _role_label = "Admin" if auth.is_admin() else "Guest"
+    st.caption(f"Logged in as **{auth.current_user()}** ({_role_label})")
+with _ub_right:
+    if st.button("Logout", key="top_logout", use_container_width=True):
+        auth.logout()
+        st.rerun()
+
+# ----------------------------
 # SECTOR MAPPING (shared with engine)
 # ----------------------------
 from strategy.portfolio_risk import PAIR_SECTOR
@@ -1880,40 +1892,44 @@ try:
             })
         cfg_df = pd.DataFrame(cfg_rows)
 
-        edited_cfg = st.data_editor(
-            cfg_df,
-            column_config={
-                "event_type": st.column_config.Column("Event Type", disabled=True),
-                "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.1, step=0.1, help="Threshold expansion factor when event is active."),
-                "entry_blocked": st.column_config.CheckboxColumn("Block Entry on Day 0", help="Block new entries on event day."),
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="event_type_config_editor",
-            disabled=["event_type"],
-        )
+        if auth.is_admin():
+            edited_cfg = st.data_editor(
+                cfg_df,
+                column_config={
+                    "event_type": st.column_config.Column("Event Type", disabled=True),
+                    "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.1, step=0.1, help="Threshold expansion factor when event is active."),
+                    "entry_blocked": st.column_config.CheckboxColumn("Block Entry on Day 0", help="Block new entries on event day."),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="event_type_config_editor",
+                disabled=["event_type"],
+            )
 
-        # Detect & save event type config changes
-        try:
-            cfg_changes = []
-            for i, row in edited_cfg.iterrows():
-                orig = cfg_df.iloc[i]
-                mult_changed = abs(float(row["multiplier"]) - float(orig["multiplier"])) > 0.001
-                blk_changed = bool(row["entry_blocked"]) != bool(orig["entry_blocked"])
-                if mult_changed or blk_changed:
-                    cfg_changes.append({
-                        "event_type": row["event_type"],
-                        "multiplier": float(row["multiplier"]),
-                        "entry_blocked": bool(row["entry_blocked"]),
-                    })
-            if cfg_changes:
-                for chg in cfg_changes:
-                    set_event_type_config(con, chg["event_type"], chg["multiplier"], chg["entry_blocked"])
-                st.success(f"Saved {len(cfg_changes)} event type config change(s). Refreshing...")
-                time.sleep(0.5)
-                st.rerun()
-        except Exception as e:
-            st.error(f"Failed to save event type config: {e}")
+            # Detect & save event type config changes
+            try:
+                cfg_changes = []
+                for i, row in edited_cfg.iterrows():
+                    orig = cfg_df.iloc[i]
+                    mult_changed = abs(float(row["multiplier"]) - float(orig["multiplier"])) > 0.001
+                    blk_changed = bool(row["entry_blocked"]) != bool(orig["entry_blocked"])
+                    if mult_changed or blk_changed:
+                        cfg_changes.append({
+                            "event_type": row["event_type"],
+                            "multiplier": float(row["multiplier"]),
+                            "entry_blocked": bool(row["entry_blocked"]),
+                        })
+                if cfg_changes:
+                    for chg in cfg_changes:
+                        set_event_type_config(con, chg["event_type"], chg["multiplier"], chg["entry_blocked"])
+                    st.success(f"Saved {len(cfg_changes)} event type config change(s). Refreshing...")
+                    time.sleep(0.5)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save event type config: {e}")
+        else:
+            st.dataframe(cfg_df, hide_index=True, use_container_width=True)
+            st.caption("Login as admin to modify event defaults.")
 
         st.divider()
 
@@ -1934,62 +1950,64 @@ try:
                 if "is_overridden" not in act_df.columns:
                     act_df["is_overridden"] = False
 
-                # Editable DataFrame
-                edited_act = st.data_editor(
-                    act_df,
-                    column_config={
-                        "pair": st.column_config.Column("Pair", disabled=True),
-                        "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.0, step=0.1, help="Set 0.0 to clear override."),
-                        "entry_blocked": st.column_config.CheckboxColumn("Entry Blocked"),
-                        "events": st.column_config.Column("Active Events", disabled=True),
-                        "blocking_reasons": st.column_config.Column("Blocking Reasons", disabled=True),
-                        "hold_warning": st.column_config.CheckboxColumn("Hold Warning", disabled=True),
-                        "warning_reasons": st.column_config.Column("Warning Reasons", disabled=True),
-                        "is_overridden": st.column_config.CheckboxColumn("Overridden?", disabled=True),
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                    key="event_risk_editor",
-                    disabled=["pair", "events", "blocking_reasons", "hold_warning", "warning_reasons", "is_overridden"],
-                )
+                if auth.is_admin():
+                    # Editable DataFrame
+                    edited_act = st.data_editor(
+                        act_df,
+                        column_config={
+                            "pair": st.column_config.Column("Pair", disabled=True),
+                            "multiplier": st.column_config.NumberColumn("Multiplier", format="%.2f", min_value=0.0, step=0.1, help="Set 0.0 to clear override."),
+                            "entry_blocked": st.column_config.CheckboxColumn("Entry Blocked"),
+                            "events": st.column_config.Column("Active Events", disabled=True),
+                            "blocking_reasons": st.column_config.Column("Blocking Reasons", disabled=True),
+                            "hold_warning": st.column_config.CheckboxColumn("Hold Warning", disabled=True),
+                            "warning_reasons": st.column_config.Column("Warning Reasons", disabled=True),
+                            "is_overridden": st.column_config.CheckboxColumn("Overridden?", disabled=True),
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key="event_risk_editor",
+                        disabled=["pair", "events", "blocking_reasons", "hold_warning", "warning_reasons", "is_overridden"],
+                    )
 
-                # Detect Changes
-                try:
-                    changes = []
-                    # Align indices to compare
-                    act_indexed = act_df.set_index("pair")
-                    edited_indexed = edited_act.set_index("pair")
+                    # Detect Changes
+                    try:
+                        changes = []
+                        act_indexed = act_df.set_index("pair")
+                        edited_indexed = edited_act.set_index("pair")
 
-                    for pair, row in edited_indexed.iterrows():
-                        if pair not in act_indexed.index: continue
-                        old_row = act_indexed.loc[pair]
+                        for pair, row in edited_indexed.iterrows():
+                            if pair not in act_indexed.index: continue
+                            old_row = act_indexed.loc[pair]
 
-                        # Compare floats with tolerance
-                        val_changed = abs(float(row["multiplier"]) - float(old_row["multiplier"])) > 0.001
-                        blk_changed = bool(row["entry_blocked"]) != bool(old_row["entry_blocked"])
+                            val_changed = abs(float(row["multiplier"]) - float(old_row["multiplier"])) > 0.001
+                            blk_changed = bool(row["entry_blocked"]) != bool(old_row["entry_blocked"])
 
-                        if val_changed or blk_changed:
-                            changes.append({
-                                "pair": pair,
-                                "multiplier": float(row["multiplier"]),
-                                "entry_blocked": bool(row["entry_blocked"])
-                            })
+                            if val_changed or blk_changed:
+                                changes.append({
+                                    "pair": pair,
+                                    "multiplier": float(row["multiplier"]),
+                                    "entry_blocked": bool(row["entry_blocked"])
+                                })
 
-                    if changes:
-                        for change in changes:
-                            val = change["multiplier"]
-                            blk = change["entry_blocked"]
-                            if val == 0.0:
-                                _event_risk_mod.set_event_override(con, change["pair"], multiplier=None, entry_blocked=None)
-                            else:
-                                _event_risk_mod.set_event_override(con, change["pair"], multiplier=val, entry_blocked=blk)
+                        if changes:
+                            for change in changes:
+                                val = change["multiplier"]
+                                blk = change["entry_blocked"]
+                                if val == 0.0:
+                                    _event_risk_mod.set_event_override(con, change["pair"], multiplier=None, entry_blocked=None)
+                                else:
+                                    _event_risk_mod.set_event_override(con, change["pair"], multiplier=val, entry_blocked=blk)
 
-                        st.success(f"Saved {len(changes)} override(s). Refreshing...")
-                        time.sleep(0.5)
-                        st.rerun()
+                            st.success(f"Saved {len(changes)} override(s). Refreshing...")
+                            time.sleep(0.5)
+                            st.rerun()
 
-                except Exception as e:
-                    st.error(f"Failed to save overrides: {e}")
+                    except Exception as e:
+                        st.error(f"Failed to save overrides: {e}")
+                else:
+                    st.dataframe(act_df, hide_index=True, use_container_width=True)
+                    st.caption("Login as admin to modify overrides.")
             else:
                 st.success("No active event multipliers right now.")
 
