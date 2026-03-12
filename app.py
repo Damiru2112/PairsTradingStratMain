@@ -877,61 +877,121 @@ def plot_z_histogram(history: pd.DataFrame, z_entry: float, n_bins: int = 30,
     return fig
 
 
-def get_trade_candidates(metrics, params, raw_issues, is_market_open=True, buffer=0.3):
+def get_trade_candidates(metrics, params, raw_issues, is_market_open=True, buffer=0.3, db_con=None):
     """
     Returns DataFrame sorted by priority with columns for display.
+    Includes per-factor risk breakdown columns.
     """
     if params is None or params.empty or metrics is None or metrics.empty:
         return pd.DataFrame(), pd.DataFrame(), []
-    
+
     # Only enabled pairs
     if "enabled" not in params.columns:
         return pd.DataFrame(), pd.DataFrame(), []
-        
+
     enabled_params = params[params["enabled"] == 1].copy()
     if enabled_params.empty:
         return pd.DataFrame(), pd.DataFrame(), []
-    
+
     # Merge metrics with params
     merged = pd.merge(metrics, enabled_params, on="pair", how="inner")
     if merged.empty:
         return pd.DataFrame(), pd.DataFrame(), []
-    
+
     # Ensure numeric z
     merged["z"] = pd.to_numeric(merged["z"], errors='coerce').fillna(0)
     merged["abs_z"] = merged["z"].abs()
-    
+
     # Filter to near-entry zone: abs(z) >= z_entry - buffer
     merged["entry_threshold"] = merged["z_entry"] - buffer
     candidates = merged[merged["abs_z"] >= merged["entry_threshold"]].copy()
-    
+
     if candidates.empty:
         return pd.DataFrame(), pd.DataFrame(), []
-    
+
     # Calculate "To Entry" (positive = away, negative = past entry)
     candidates["to_entry"] = candidates["z_entry"] - candidates["abs_z"]
-    
+
     # Calculate time since signal (minutes)
     now_utc = datetime.now(timezone.utc)
-    
+
     def calc_time_since(row):
         ts = row.get("last_updated") or row.get("time")
         if not ts:
-            return 60.0  # Default to 60 mins if missing (treat as old)
+            return 60.0
         try:
             ts_dt = pd.to_datetime(ts, utc=True)
             return (now_utc - ts_dt).total_seconds() / 60.0
         except:
             return 60.0
-    
+
     candidates["time_since_mins"] = candidates.apply(calc_time_since, axis=1)
-    
+
+    # --- Fetch latest event risk state per pair, recomputed with LIVE config ---
+    event_log_lookup = {}
+    if db_con is not None:
+        try:
+            # 1. Current event_type_config (what the user actually set)
+            _evt_configs = {}
+            for r in db_con.execute("SELECT event_type, multiplier, entry_blocked FROM event_type_config").fetchall():
+                _evt_configs[r[0]] = {"multiplier": r[1], "entry_blocked": bool(r[2])}
+
+            # 2. Per-pair overrides
+            _pair_overrides = {}
+            try:
+                for r in db_con.execute("SELECT pair, multiplier, entry_blocked FROM event_risk_overrides").fetchall():
+                    _pair_overrides[r[0]] = {"multiplier": r[1], "entry_blocked": bool(r[2])}
+            except Exception:
+                pass
+
+            # 3. Latest event log per pair (for active_events_json — which events are active)
+            cur = db_con.execute("""
+                SELECT e.pair, e.active_events_json
+                FROM event_risk_log e
+                INNER JOIN (SELECT pair, MAX(id) as max_id FROM event_risk_log GROUP BY pair) latest
+                ON e.pair = latest.pair AND e.id = latest.max_id
+            """)
+            for row in cur.fetchall():
+                pair, events_json = row[0], row[1]
+                try:
+                    active_events = json.loads(events_json) if events_json else []
+                except (json.JSONDecodeError, TypeError):
+                    active_events = []
+
+                # Recompute multiplier & entry_blocked from CURRENT config
+                if pair in _pair_overrides:
+                    # Per-pair override takes precedence
+                    ovr = _pair_overrides[pair]
+                    eff_mult = ovr["multiplier"]
+                    eff_blocked = ovr["entry_blocked"]
+                elif active_events:
+                    # Compute from current event_type_config
+                    eff_mult = 1.0
+                    eff_blocked = False
+                    for ev in active_events:
+                        etype = ev.get("type", "")
+                        cfg = _evt_configs.get(etype, {})
+                        evt_mult = cfg.get("multiplier", ev.get("config_multiplier", 1.0))
+                        evt_block = cfg.get("entry_blocked", ev.get("config_entry_blocked", False))
+                        eff_mult = max(eff_mult, evt_mult)
+                        if evt_block:
+                            eff_blocked = True
+                else:
+                    eff_mult = 1.0
+                    eff_blocked = False
+
+                event_log_lookup[pair] = {
+                    "multiplier": eff_mult,
+                    "entry_blocked": eff_blocked,
+                    "active_events_json": events_json,
+                }
+        except Exception:
+            pass
+
     # Build lookup for issues by pair
-    # System/data red issues block ALL pairs
     system_data_red = [i for i in raw_issues if i["type"] in ["system", "data"] and i["severity"] == "red"]
     has_global_block = len(system_data_red) > 0
-    
-    # Pair-level issues
+
     pair_issues = {}
     for issue in raw_issues:
         p = issue.get("pair")
@@ -939,68 +999,123 @@ def get_trade_candidates(metrics, params, raw_issues, is_market_open=True, buffe
             if p not in pair_issues:
                 pair_issues[p] = []
             pair_issues[p].append(issue)
-    
-    def determine_status(row):
+
+    def compute_risk_details(row):
+        """Compute per-factor risk breakdown for a candidate pair."""
         pair = row["pair"]
-        to_entry = row["to_entry"]
         drift_pct = abs(row.get("beta_drift_pct", 0) or 0)
         max_drift = row.get("max_drift_pct", 20) or 20
-        time_mins = row["time_since_mins"]
-        
-        # Check for blocks
-        if has_global_block:
-            return "🔴 Blocked (Data)"
-        
-        # Pair-specific red issues
-        if pair in pair_issues:
-            red_pair = [i for i in pair_issues[pair] if i["severity"] == "red"]
-            if red_pair:
-                return "🔴 Blocked (Risk)"
-        
-        # Check if at/past entry
-        at_entry = to_entry <= 0
-        
-        # Amber conditions
-        amber_drift = drift_pct > 0.8 * max_drift
-        signal_old = is_market_open and time_mins > 30
-        
-        # Pair amber issues
-        amber_issues = False
-        if pair in pair_issues:
-            amber_issues = any(i["severity"] == "amber" for i in pair_issues[pair])
-        
-        if at_entry and not amber_drift and not signal_old and not amber_issues:
-            return "✅ Valid"
+        abs_z = row["abs_z"]
+        base_z_entry = row.get("z_entry", 3.5) or 3.5
+
+        # Event risk info — recomputed from current config
+        ev = event_log_lookup.get(pair, {})
+        event_mult = ev.get("multiplier", 1.0) or 1.0
+        event_entry_blocked = bool(ev.get("entry_blocked", 0))
+        eff_z_entry = base_z_entry * event_mult  # Recompute from live config
+        active_events_json = ev.get("active_events_json", "[]") or "[]"
+
+        # Parse active events for display
+        try:
+            active_events = json.loads(active_events_json) if active_events_json else []
+        except (json.JSONDecodeError, TypeError):
+            active_events = []
+        event_labels = ", ".join(
+            e.get("window_label", e.get("type", "")) for e in active_events
+        ) if active_events else "None"
+
+        # --- Factor checks ---
+        blocks = []
+
+        # 1. Beta Drift
+        drift_ok = drift_pct <= max_drift
+        drift_display = f"{drift_pct:.1f}/{max_drift:.1f}%"
+        if not drift_ok:
+            blocks.append("Beta Drift")
+            drift_display = f"⛔ {drift_display}"
         else:
-            return "🟡 Watch"
-    
-    candidates["status"] = candidates.apply(determine_status, axis=1)
-    
+            drift_display = f"✓ {drift_display}"
+
+        # 2. Event entry blocked
+        if event_entry_blocked:
+            blocks.append("Event Block")
+        event_block_display = "⛔ Blocked" if event_entry_blocked else "✓ Open"
+
+        # 3. Z vs effective entry threshold
+        z_passes = abs_z >= eff_z_entry
+        z_vs_eff_display = f"{abs_z:.2f}/{eff_z_entry:.2f}"
+        if not z_passes:
+            blocks.append("Z < Eff. Entry")
+            z_vs_eff_display = f"⛔ {z_vs_eff_display}"
+        else:
+            z_vs_eff_display = f"✓ {z_vs_eff_display}"
+
+        # 4. Event multiplier display
+        if event_mult > 1.0:
+            mult_display = f"⚠ {event_mult:.2f}x"
+        else:
+            mult_display = f"✓ {event_mult:.1f}x"
+
+        # 5. Data/System block
+        if has_global_block:
+            blocks.append("Data/System")
+
+        # Status determination (same logic as before)
+        if has_global_block:
+            status = "🔴 Blocked (Data)"
+        elif pair in pair_issues and any(i["severity"] == "red" for i in pair_issues[pair]):
+            status = "🔴 Blocked (Risk)"
+        else:
+            at_entry = row["to_entry"] <= 0
+            amber_drift = drift_pct > 0.8 * max_drift
+            signal_old = is_market_open and row["time_since_mins"] > 30
+            amber_issues = pair in pair_issues and any(
+                i["severity"] == "amber" for i in pair_issues[pair]
+            )
+            if at_entry and not amber_drift and not signal_old and not amber_issues:
+                status = "✅ Valid"
+            else:
+                status = "🟡 Watch"
+
+        block_reason = " | ".join(blocks) if blocks else "—"
+
+        return pd.Series({
+            "status": status,
+            "drift_check": drift_display,
+            "event_block": event_block_display,
+            "z_vs_eff": z_vs_eff_display,
+            "event_mult": mult_display,
+            "events": event_labels,
+            "block_reason": block_reason,
+        })
+
+    risk_details = candidates.apply(compute_risk_details, axis=1)
+    for col in risk_details.columns:
+        candidates[col] = risk_details[col]
+
     # Calculate priority score with guardrails
     def calc_priority(row):
         abs_z = row["abs_z"]
         drift_pct = abs(row.get("beta_drift_pct", 0) or 0)
         max_drift = row.get("max_drift_pct", 0) or 0
         time_mins = row["time_since_mins"]
-        
-        # Drift room: clamp to [0, 1]
+
         if max_drift > 0:
             drift_room = max(0, min(1, 1 - drift_pct / max_drift))
         else:
-            drift_room = 0.5  # Fallback if missing
-        
-        # Weights
-        w1 = 10  # z-score weight
-        w2 = 5   # drift room weight
-        w3 = 0.1 # time penalty
-        
+            drift_room = 0.5
+
+        w1 = 10
+        w2 = 5
+        w3 = 0.1
+
         return w1 * abs_z + w2 * drift_room - w3 * time_mins
-    
+
     candidates["priority_score"] = candidates.apply(calc_priority, axis=1)
-    
+
     # Sort by priority descending, limit to top 15
     candidates = candidates.sort_values("priority_score", ascending=False).head(15)
-    
+
     # Format columns for display
     candidates["beta_drift_display"] = candidates["beta_drift_pct"].apply(
         lambda x: f"{abs(x):.1f}%" if pd.notnull(x) else "N/A"
@@ -1011,7 +1126,7 @@ def get_trade_candidates(metrics, params, raw_issues, is_market_open=True, buffe
     candidates["time_display"] = candidates["time_since_mins"].apply(
         lambda x: f"{int(x)}m" if pd.notnull(x) else "N/A"
     )
-    
+
     return candidates, candidates, []
 
 
@@ -1047,7 +1162,7 @@ raw_issues.extend(get_risk_issues(con, params))
 
 # Candidate Scan
 # ... code continues ...
-candidates, filtered_candidates, blocked_reasons = get_trade_candidates(metrics, params, raw_issues, is_market_open=mkt["is_open"])
+candidates, filtered_candidates, blocked_reasons = get_trade_candidates(metrics, params, raw_issues, is_market_open=mkt["is_open"], db_con=con)
 
 # --- UI FEEDBACK FOR EMPTY STATES ---
 system_data_red = [i for i in raw_issues if i["type"] in ["system", "data"] and i["severity"] == "red"]
@@ -1726,34 +1841,56 @@ else:
     elif selected_filter == "Blocked only":
         display_df = display_df[display_df["status"].str.contains("Blocked")]
     
-    # Prepare display columns
-    display_cols = ["pair", "abs_z", "to_entry_display", "beta_drift_display", "time_display", "status"]
+    # Prepare display columns — include risk breakdown
+    display_cols = [
+        "pair", "abs_z", "to_entry_display", "drift_check", "z_vs_eff",
+        "event_mult", "event_block", "events", "block_reason", "status"
+    ]
     col_names = {
         "pair": "Pair",
         "abs_z": "|Z|",
         "to_entry_display": "To Entry",
-        "beta_drift_display": "Beta Drift %",
-        "time_display": "Time Since Signal",
+        "drift_check": "Drift (Act/Lim)",
+        "z_vs_eff": "|Z| vs Eff. Entry",
+        "event_mult": "Event Mult.",
+        "event_block": "Event Gate",
+        "events": "Active Events",
+        "block_reason": "Block Reason",
         "status": "Status"
     }
-    
+
     # Filter to available columns
     display_cols = [c for c in display_cols if c in display_df.columns]
-    
+
     if not display_df.empty:
-        # Style function for status colors
-        def style_status(row):
-            status = row.get("status", "")
-            if "Blocked" in status:
-                return ['background-color: #5a2525'] * len(row)
-            elif "Valid" in status:
-                return ['background-color: #1b5e20'] * len(row)
-            elif "Watch" in status:
-                return ['background-color: #5a4525'] * len(row)
-            return [''] * len(row)
-        
-        styled_df = display_df[display_cols].rename(columns=col_names).style.apply(style_status, axis=1)
-        
+        renamed_df = display_df[display_cols].rename(columns=col_names)
+
+        def style_risk_cells(row):
+            """Color individual cells red if they contain a block indicator."""
+            styles = []
+            for col_name, val in row.items():
+                val_str = str(val) if val is not None else ""
+                if "⛔" in val_str:
+                    styles.append("background-color: #5a2525; color: #ff6b6b")
+                elif "⚠" in val_str:
+                    styles.append("background-color: #5a4525; color: #ffb74d")
+                elif col_name == "Status":
+                    if "Blocked" in val_str:
+                        styles.append("background-color: #5a2525; color: #ff6b6b")
+                    elif "Valid" in val_str:
+                        styles.append("background-color: #1b5e20; color: #81c784")
+                    elif "Watch" in val_str:
+                        styles.append("background-color: #5a4525; color: #ffb74d")
+                    else:
+                        styles.append("")
+                elif col_name == "Block Reason" and val_str and val_str != "—":
+                    styles.append("background-color: #5a2525; color: #ff6b6b; font-weight: bold")
+                else:
+                    styles.append("")
+            return styles
+
+        styled_df = renamed_df.style.apply(style_risk_cells, axis=1)
+
         st.dataframe(
             styled_df,
             use_container_width=True,
@@ -2142,7 +2279,56 @@ else:
             }
         )
 
-        if st.button("Save Changes"):
+        # --- Detect unsaved changes and highlight them ---
+        _orig = p_edit.sort_values("pair").reset_index(drop=True)
+        _edit = edited_df.reset_index(drop=True)
+        _compare_cols = [c for c in _orig.columns if c in _edit.columns and c != "pair"]
+        _has_unsaved = False
+
+        # Build diff: find rows/cols that changed
+        _changed_cells = {}  # {(row_idx, col): (old_val, new_val)}
+        for idx in range(_orig.shape[0]):
+            if idx >= _edit.shape[0]:
+                break
+            pair_name = _orig.at[idx, "pair"] if "pair" in _orig.columns else idx
+            for col in _compare_cols:
+                oval = _orig.at[idx, col]
+                nval = _edit.at[idx, col]
+                # Normalize bools/ints for comparison
+                try:
+                    if isinstance(oval, bool) or isinstance(nval, bool):
+                        changed = bool(oval) != bool(nval)
+                    else:
+                        changed = abs(float(oval) - float(nval)) > 1e-6
+                except (TypeError, ValueError):
+                    changed = str(oval) != str(nval)
+                if changed:
+                    _changed_cells[(pair_name, col)] = (oval, nval)
+                    _has_unsaved = True
+
+        if _has_unsaved:
+            st.warning(f"⚠️ **{len(_changed_cells)} uncommitted change(s)** — press Commit to persist to the database.")
+            # Build a small diff table
+            _diff_rows = []
+            for (pair_name, col), (oval, nval) in _changed_cells.items():
+                _diff_rows.append({
+                    "Pair": pair_name,
+                    "Parameter": col,
+                    "DB Value": oval,
+                    "Editor Value": nval,
+                })
+            _diff_df = pd.DataFrame(_diff_rows)
+
+            def _style_diff(row):
+                return ["background-color: #1a3a5c; color: #64b5f6; font-weight: bold"] * len(row)
+
+            st.dataframe(
+                _diff_df.style.apply(_style_diff, axis=1),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        if st.button("Commit"):
             try:
                 # Convert back to int for DB
                 to_save = edited_df.copy()

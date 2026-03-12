@@ -128,6 +128,7 @@ class TradingEngine1m:
         # Timestamp tracking for deduplication and gating
         self._last_processed_1m_ts: Dict[str, pd.Timestamp] = {}  # Per-symbol
         self._last_slow_bar_ts: Optional[pd.Timestamp] = None     # Global
+        self._last_slow_refresh_wall: Optional[datetime] = None   # Wall-clock time of last 15m refresh
         self._sent_event_ids: Set[str] = self._load_sent_events()
         
         # Persistence filter: ring buffer of last 3 z-scores per pair
@@ -308,14 +309,14 @@ class TradingEngine1m:
         """
         symbol_frames = {s: self.cache_15m.data[s].to_frame() for s in self.symbols if s in self.cache_15m.data}
         pair_frames = build_pair_frames(symbol_frames, self.pairs, how="inner")
-        
+
         if not pair_frames:
             return
-        
+
         for (sym1, sym2), df in pair_frames.items():
             pair_name = f"{sym1}-{sym2}"
             self.slow_metrics.update(pair_name, sym1, sym2, df)
-        
+
         # Update last slow bar timestamp
         for s in self.symbols:
             if s in self.cache_15m.data and not self.cache_15m.data[s].empty:
@@ -323,22 +324,22 @@ class TradingEngine1m:
                 if self._last_slow_bar_ts is None or ts > self._last_slow_bar_ts:
                     self._last_slow_bar_ts = ts
 
+        # Update wall-clock refresh time
+        self._last_slow_refresh_wall = datetime.now(timezone.utc)
+
     def _should_refresh_slow(self) -> bool:
-        """Check if a new 15m bar is available (based on timestamp, not wall-clock)."""
-        # Sample one symbol
-        if not self.cache_15m.data:
-            return False
-        
-        sample_sym = next(iter(self.cache_15m.data))
-        current_latest = self.cache_15m.data[sample_sym].index[-1] if not self.cache_15m.data[sample_sym].empty else None
-        
-        if current_latest is None:
-            return False
-        
-        if self._last_slow_bar_ts is None:
+        """
+        Check if slow metrics need refreshing.
+
+        Uses wall-clock time (>=15 min since last refresh) to avoid the
+        circular dependency where the 15m cache only gets new data via
+        _refresh_15m_cache(), which only runs when this method returns True.
+        """
+        if self._last_slow_refresh_wall is None:
             return True
-        
-        return current_latest > self._last_slow_bar_ts
+
+        elapsed = (datetime.now(timezone.utc) - self._last_slow_refresh_wall).total_seconds()
+        return elapsed >= 900  # 15 minutes
 
     def _run_1m_polling_loop(self):
         """
