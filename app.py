@@ -1665,44 +1665,48 @@ if not positions.empty:
             }
         )
 
-    # --- PORTFOLIO RISK CONTROLS ---
-    st.markdown("#### Portfolio Risk Controls")
-    if auth.is_admin():
-        _rc = db.get_risk_config(con)
+else:
+    st.caption("No open positions.")
 
-        _rc_data = pd.DataFrame([
-            {"Param": "Delta Warning %", "key": "delta_warning_pct",  "Value": _rc.get("delta_warning_pct", 0.015) * 100},
-            {"Param": "Delta Soft %",    "key": "delta_soft_pct",     "Value": _rc.get("delta_soft_pct", 0.020) * 100},
-            {"Param": "Delta Hard %",    "key": "delta_hard_pct",     "Value": _rc.get("delta_hard_pct", 0.030) * 100},
-            {"Param": "Sector Warning %","key": "sector_warning_pct", "Value": _rc.get("sector_warning_pct", 0.20) * 100},
-            {"Param": "Sector Soft %",   "key": "sector_soft_pct",    "Value": _rc.get("sector_soft_pct", 0.25) * 100},
-            {"Param": "Sector Hard %",   "key": "sector_hard_pct",    "Value": _rc.get("sector_hard_pct", 0.30) * 100},
-        ])
-        _rc_orig = _rc_data["Value"].tolist()
+# --- PORTFOLIO RISK CONTROLS ---
+st.markdown("#### Portfolio Risk Controls")
+if auth.is_admin():
+    _rc = db.get_risk_config(con)
 
-        edited_rc = st.data_editor(
-            _rc_data[["Param", "Value"]], use_container_width=True, hide_index=True,
-            key="risk_config_editor",
-            column_config={
-                "Param": st.column_config.TextColumn("Parameter", disabled=True),
-                "Value": st.column_config.NumberColumn("Value (%)", min_value=0.1, max_value=100.0, step=0.1, format="%.1f"),
-            },
-        )
+    _rc_data = pd.DataFrame([
+        {"Param": "Delta Warning %", "key": "delta_warning_pct",  "Value": _rc.get("delta_warning_pct", 0.015) * 100},
+        {"Param": "Delta Soft %",    "key": "delta_soft_pct",     "Value": _rc.get("delta_soft_pct", 0.020) * 100},
+        {"Param": "Delta Hard %",    "key": "delta_hard_pct",     "Value": _rc.get("delta_hard_pct", 0.030) * 100},
+        {"Param": "Sector Warning %","key": "sector_warning_pct", "Value": _rc.get("sector_warning_pct", 0.20) * 100},
+        {"Param": "Sector Soft %",   "key": "sector_soft_pct",    "Value": _rc.get("sector_soft_pct", 0.25) * 100},
+        {"Param": "Sector Hard %",   "key": "sector_hard_pct",    "Value": _rc.get("sector_hard_pct", 0.30) * 100},
+    ])
+    _rc_orig = _rc_data["Value"].tolist()
 
-        _rc_updates = {}
-        for i, row in edited_rc.iterrows():
-            new_val = row["Value"]
-            if abs(new_val - _rc_orig[i]) > 0.01:
-                _rc_updates[_rc_data.iloc[i]["key"]] = new_val / 100.0
-        if _rc_updates:
-            db.save_risk_config(con, _rc_updates)
-            st.toast(f"Risk config updated: {', '.join(_rc_updates.keys())}")
-    else:
-        st.caption("Login as admin to modify risk controls.")
+    edited_rc = st.data_editor(
+        _rc_data[["Param", "Value"]], use_container_width=True, hide_index=True,
+        key="risk_config_editor",
+        column_config={
+            "Param": st.column_config.TextColumn("Parameter", disabled=True),
+            "Value": st.column_config.NumberColumn("Value (%)", min_value=0.1, max_value=100.0, step=0.1, format="%.1f"),
+        },
+    )
 
-    st.divider()
-    st.markdown("### Manual Actions")
-    if auth.is_admin():
+    _rc_updates = {}
+    for i, row in edited_rc.iterrows():
+        new_val = row["Value"]
+        if abs(new_val - _rc_orig[i]) > 0.01:
+            _rc_updates[_rc_data.iloc[i]["key"]] = new_val / 100.0
+    if _rc_updates:
+        db.save_risk_config(con, _rc_updates)
+        st.toast(f"Risk config updated: {', '.join(_rc_updates.keys())}")
+else:
+    st.caption("Login as admin to modify risk controls.")
+
+st.divider()
+st.markdown("### Manual Actions")
+if auth.is_admin():
+    if not positions.empty:
         col1, col2 = st.columns([3, 1])
         with col1:
             pair_to_close = st.selectbox("Select Position to Close", options=positions["pair"].tolist(), key="manual_close_select")
@@ -1719,10 +1723,9 @@ if not positions.empty:
                     except Exception as e:
                         st.error(f"Failed to send close request: {e}")
     else:
-        st.caption("Login as admin to perform manual actions.")
-
+        st.caption("No open positions to close.")
 else:
-    st.caption("No open positions.")
+    st.caption("Login as admin to perform manual actions.")
 
 st.divider()
 
