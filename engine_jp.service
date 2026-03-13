@@ -1,0 +1,18 @@
+[Unit]
+Description=PairsTrading JP Engine (1m)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=trader
+WorkingDirectory=/home/trader/PairsTrading
+EnvironmentFile=/home/trader/PairsTrading/.env
+ExecStart=/home/trader/PairsTrading/.venv/bin/python -u run_engine_jp.py --engine-id=JP_1M
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/home/trader/PairsTrading/engine_jp.log
+StandardError=append:/home/trader/PairsTrading/engine_jp.log
+SyslogIdentifier=pairs-engine-jp
+
+[Install]
+WantedBy=multi-user.target

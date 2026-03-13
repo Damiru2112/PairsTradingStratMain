@@ -27,11 +27,20 @@ echo ""
 
 # --- 1. Safety: warn if US market is likely open ---------------------------
 if [ "$FORCE" -eq 0 ]; then
-    HOUR=$(TZ='America/New_York' date +%H)
-    DOW=$(TZ='America/New_York' date +%u)  # 1=Mon … 7=Sun
-    if [ "$DOW" -le 5 ] && [ "$HOUR" -ge 9 ] && [ "$HOUR" -lt 16 ]; then
-        echo "WARNING: US market may be open ($(TZ='America/New_York' date '+%H:%M ET'))."
-        echo "Restarting the engine will interrupt live positions."
+    HOUR_US=$(TZ='America/New_York' date +%H)
+    DOW_US=$(TZ='America/New_York' date +%u)  # 1=Mon … 7=Sun
+    HOUR_JP=$(TZ='Asia/Tokyo' date +%H)
+    DOW_JP=$(TZ='Asia/Tokyo' date +%u)
+    MARKET_WARNING=""
+    if [ "$DOW_US" -le 5 ] && [ "$HOUR_US" -ge 9 ] && [ "$HOUR_US" -lt 16 ]; then
+        MARKET_WARNING="US market may be open ($(TZ='America/New_York' date '+%H:%M ET')). "
+    fi
+    if [ "$DOW_JP" -le 5 ] && [ "$HOUR_JP" -ge 9 ] && [ "$HOUR_JP" -lt 15 ]; then
+        MARKET_WARNING="${MARKET_WARNING}JP market may be open ($(TZ='Asia/Tokyo' date '+%H:%M JST'))."
+    fi
+    if [ -n "$MARKET_WARNING" ]; then
+        echo "WARNING: $MARKET_WARNING"
+        echo "Restarting engines will interrupt live positions."
         read -r -p "Continue? [y/N] " confirm
         [[ "$confirm" =~ ^[yY]$ ]] || { echo "Aborted."; exit 0; }
         echo ""
@@ -59,9 +68,11 @@ import db
 import persist
 import price_cache
 import data_polygon
+import data_yfinance
 import strategy.live_trader
 import analytics.betas
 import analytics.zscore
+import portfolio_jp
 print("      All critical imports OK.")
 EOF
 echo ""
@@ -69,10 +80,11 @@ echo ""
 # --- 5. Restart services ----------------------------------------------------
 echo "[4/4] Restarting services..."
 sudo systemctl restart engine
+sudo systemctl restart engine_jp
 sleep 2
 sudo systemctl restart dashboard
 echo ""
 
 echo "=== Deploy complete ==="
 echo ""
-sudo systemctl status engine dashboard --no-pager -l
+sudo systemctl status engine engine_jp dashboard --no-pager -l
