@@ -35,7 +35,7 @@ EASTERN = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
 
 EARNINGS_MULTIPLIER = 1.5
-DIVIDEND_MULTIPLIER = 1.3
+DIVIDEND_MULTIPLIER = 1.0
 MACRO_MULTIPLIER = 1.2
 
 # Window bounds (trading days relative to event date, inclusive)

@@ -976,6 +976,40 @@ def render(con):
                 except Exception as e:
                     st.error(f"Failed to save JP settings: {e}")
 
+        # --- Bulk Update Section ---
+        st.divider()
+        st.subheader("JP Bulk Parameter Update")
+        st.info("Update a specific parameter for **ALL enabled JP pairs** at once.")
+
+        with st.form("jp_bulk_update_form"):
+            col_b1, col_b2, col_b3 = st.columns(3)
+
+            with col_b1:
+                bulk_param = st.selectbox(
+                    "Parameter",
+                    ["z_entry", "z_exit", "max_drift_pct", "max_drift_delta", "alloc_pct"],
+                    key="jp_bulk_param",
+                )
+
+            with col_b2:
+                bulk_val = st.number_input("New Value", value=0.0, step=0.1, format="%.2f", key="jp_bulk_val")
+
+            with col_b3:
+                st.write("")
+                st.write("")
+                bulk_submit = st.form_submit_button("Apply to All Enabled JP Pairs")
+
+            if bulk_submit:
+                try:
+                    with con:
+                        con.execute(f"UPDATE jp_pair_params SET {bulk_param} = ? WHERE enabled = 1", (bulk_val,))
+                        con.commit()
+                    st.success(f"Updated {bulk_param} to {bulk_val} for all enabled JP pairs!")
+                    time.sleep(1.0)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"JP bulk update failed: {e}")
+
     st.divider()
 
     # ---- Pair Analysis ----
