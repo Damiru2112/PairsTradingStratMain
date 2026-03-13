@@ -322,23 +322,9 @@ class JPTradingEngine:
         for (s1, s2), pf in pair_frames.items():
             try:
                 pair_key = f"{s1}-{s2}"
-                z_series = compute_zscore_30d_weekly(pf, s1, s2)
-                if z_series is None or z_series.empty:
-                    continue
-
-                spread = pf[s1] / pf[s2]
-                mean_series = spread.rolling(30 * 26).mean()
-                std_series = spread.rolling(30 * 26).std()
-
-                last_mean = mean_series.dropna().iloc[-1] if not mean_series.dropna().empty else None
-                last_std = std_series.dropna().iloc[-1] if not std_series.dropna().empty else None
-
-                if last_mean is not None and last_std is not None:
-                    self.slow_metrics.update(pair_key, {
-                        "mean": float(last_mean),
-                        "std": float(last_std),
-                        "z": float(z_series.dropna().iloc[-1]) if not z_series.dropna().empty else 0.0,
-                    })
+                result = self.slow_metrics.update(pair_key, s1, s2, pf)
+                if result is None:
+                    log.warning(f"Slow metrics returned None for {pair_key}")
             except Exception as e:
                 log.warning(f"Slow metrics failed for {s1}-{s2}: {e}")
 
@@ -455,12 +441,9 @@ class JPTradingEngine:
                         continue
 
                     spread = p1 / p2
-                    mean_cached = slow.get("mean")
-                    std_cached = slow.get("std")
-                    if mean_cached is None or std_cached is None or std_cached == 0:
+                    z_1m = self.slow_metrics.compute_fast_zscore(pair_key, spread)
+                    if z_1m is None:
                         continue
-
-                    z_1m = (spread - mean_cached) / std_cached
 
                     # Persistence filter (2/3 bars must exceed threshold)
                     if pair_key not in self._z_history:
