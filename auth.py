@@ -267,6 +267,13 @@ def render_login_page() -> bool:
                     role = authenticate(username, password)
                     if role:
                         login(username, role)
+                        # Notify via Telegram when admin account is used
+                        if username == "admin":
+                            try:
+                                from telegram_notifier import notifier
+                                notifier.notify("admin logging in")
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         st.error("Invalid username or password.")
