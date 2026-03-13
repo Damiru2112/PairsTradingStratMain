@@ -295,7 +295,7 @@ def fetch_many_symbols_15m(
     """
     results = {}
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=min(days, 60))
+    start = end - timedelta(days=min(days, 57))  # yfinance enforces ~60d; use 57 for safety margin
 
     for sym in symbols:
         raw = _fetch_single_symbol(
