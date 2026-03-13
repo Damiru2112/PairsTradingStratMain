@@ -714,3 +714,420 @@ def save_risk_config(con: sqlite3.Connection, updates: Dict[str, float]) -> None
             "INSERT OR REPLACE INTO risk_config (key, value) VALUES (?, ?)",
             list(updates.items()),
         )
+
+
+# ==============================================================================
+# JP PAIRS — SCHEMA & FUNCTIONS
+# ==============================================================================
+
+def init_jp_db(con: sqlite3.Connection) -> None:
+    """Initialize JP-specific database tables (idempotent). Uses jp_ prefix."""
+    with con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_live_metrics_snapshot (
+                pair TEXT PRIMARY KEY,
+                time TEXT NOT NULL,
+                z REAL,
+                direct_beta REAL,
+                beta_30_weekly REAL,
+                beta_drift_pct REAL,
+                last_updated TEXT
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_pair_series (
+                pair TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                time TEXT NOT NULL,
+                z REAL,
+                direct_beta REAL,
+                beta_30_weekly REAL,
+                beta_drift_pct REAL,
+                close_price_1 REAL,
+                close_price_2 REAL,
+                PRIMARY KEY (pair, timeframe, time)
+            );
+        """)
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jp_pair_series_time
+            ON jp_pair_series (time);
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_pair_params (
+                pair TEXT PRIMARY KEY,
+                z_entry REAL NOT NULL,
+                z_exit REAL NOT NULL,
+                max_drift_pct REAL NOT NULL,
+                max_drift_delta REAL NOT NULL DEFAULT 0,
+                alloc_pct REAL NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_open_positions (
+                pair TEXT PRIMARY KEY,
+                sym1 TEXT,
+                sym2 TEXT,
+                direction TEXT,
+                qty1 INTEGER,
+                qty2 INTEGER,
+                beta_entry REAL,
+                entry_time TEXT,
+                entry_price1 REAL,
+                entry_price2 REAL,
+                entry_z REAL,
+                pnl_unrealized REAL,
+                last_price1 REAL,
+                last_price2 REAL,
+                updated_at TEXT,
+                engine_id TEXT DEFAULT 'JP_1M',
+                beta_drift_limit REAL DEFAULT 10.0
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_closed_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT,
+                direction TEXT,
+                entry_time TEXT,
+                exit_time TEXT,
+                pnl REAL,
+                meta_json TEXT,
+                commission REAL,
+                borrow_cost REAL,
+                slippage REAL,
+                total_cost REAL
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_pnl_summary (
+                time TEXT PRIMARY KEY,
+                equity REAL,
+                realized_pnl REAL,
+                unrealized_pnl REAL,
+                open_pos_count INTEGER,
+                closed_trade_count INTEGER
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_daily_performance (
+                date TEXT PRIMARY KEY,
+                realized_pnl REAL,
+                total_equity REAL,
+                num_trades INTEGER,
+                wins INTEGER,
+                losses INTEGER,
+                updated_at TEXT,
+                total_equity_mtm REAL
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_equity_curve (
+                timestamp TEXT NOT NULL,
+                equity REAL NOT NULL,
+                realized_pnl REAL DEFAULT 0,
+                unrealized_pnl REAL DEFAULT 0,
+                open_positions INTEGER DEFAULT 0
+            );
+        """)
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jp_equity_curve_ts
+            ON jp_equity_curve (timestamp);
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_pair_series_1m (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                time TEXT NOT NULL,
+                pair TEXT NOT NULL,
+                px_a REAL,
+                px_b REAL,
+                hi_a REAL,
+                lo_a REAL,
+                hi_b REAL,
+                lo_b REAL,
+                vol_a INTEGER,
+                vol_b INTEGER,
+                spread_1m REAL,
+                mean_30d_cached REAL,
+                std_30d_cached REAL,
+                z_1m REAL,
+                passed_persistence INTEGER,
+                log_reason TEXT,
+                engine_id TEXT,
+                source TEXT DEFAULT 'yfinance'
+            );
+        """)
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS idx_jp_pair_series_1m_lookup
+            ON jp_pair_series_1m (pair, time);
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_manual_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                payload TEXT,
+                status TEXT DEFAULT 'PENDING',
+                created_at TEXT,
+                processed_at TEXT
+            );
+        """)
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS jp_risk_config (
+                key TEXT PRIMARY KEY,
+                value REAL NOT NULL
+            );
+        """)
+
+
+# --- JP WRITERS ---
+
+def jp_save_snapshot(con: sqlite3.Connection, metrics_df: pd.DataFrame) -> None:
+    if metrics_df is None or metrics_df.empty:
+        return
+    df = metrics_df.copy()
+    if "last_updated" not in df.columns:
+        df["last_updated"] = datetime.now(timezone.utc).isoformat()
+    required_cols = ["pair", "time", "z", "direct_beta", "beta_30_weekly", "beta_drift_pct", "last_updated"]
+    for c in required_cols:
+        if c not in df.columns:
+            df[c] = None
+    df = _sanitize_db_types(df, time_cols=["time", "last_updated"])
+    data = list(df[required_cols].itertuples(index=False, name=None))
+    with con:
+        con.executemany("""
+            INSERT OR REPLACE INTO jp_live_metrics_snapshot
+            (pair, time, z, direct_beta, beta_30_weekly, beta_drift_pct, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, data)
+
+
+def jp_save_history(con: sqlite3.Connection, series_df: pd.DataFrame, timeframe: str = "15m") -> None:
+    if series_df is None or series_df.empty:
+        return
+    df = series_df.copy()
+    df["timeframe"] = timeframe
+    cols = ["pair", "timeframe", "time", "z", "direct_beta", "beta_30_weekly", "beta_drift_pct"]
+    extra_cols = ["close_price_1", "close_price_2"]
+    final_cols = cols + [c for c in extra_cols if c in df.columns]
+    for c in cols:
+        if c not in df.columns:
+            df[c] = None
+    df = _sanitize_db_types(df, time_cols=["time"])
+    placeholders = ",".join(["?"] * len(final_cols))
+    col_names = ",".join(final_cols)
+    data = list(df[final_cols].itertuples(index=False, name=None))
+    with con:
+        con.executemany(f"""
+            INSERT OR REPLACE INTO jp_pair_series ({col_names})
+            VALUES ({placeholders})
+        """, data)
+
+
+def jp_save_open_positions(con: sqlite3.Connection, positions_df: pd.DataFrame, engine_id: str = "JP_1M") -> None:
+    with con:
+        try:
+            con.execute("DELETE FROM jp_open_positions WHERE engine_id = ?", (engine_id,))
+        except sqlite3.OperationalError:
+            con.execute("DELETE FROM jp_open_positions")
+        if positions_df is not None and not positions_df.empty:
+            records = []
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for _, row in positions_df.iterrows():
+                def _get(key, typ, default):
+                    val = row.get(key, default)
+                    if pd.isna(val): return None
+                    if typ == "time" and val:
+                        try: return pd.Timestamp(val).isoformat()
+                        except: return str(val)
+                    return val
+                records.append((
+                    str(row.get("pair")), str(row.get("sym1", "")), str(row.get("sym2", "")),
+                    str(row.get("direction", "")), int(row.get("qty1", 0)), int(row.get("qty2", 0)),
+                    float(row.get("beta_entry", 0.0)), _get("entry_time", "time", None),
+                    float(row.get("entry_price1", 0.0)), float(row.get("entry_price2", 0.0)),
+                    float(row.get("entry_z", 0.0)), float(row.get("pnl_unrealized", 0.0)),
+                    float(row.get("last_price1", 0.0)) if pd.notnull(row.get("last_price1")) else None,
+                    float(row.get("last_price2", 0.0)) if pd.notnull(row.get("last_price2")) else None,
+                    now_iso, engine_id, float(row.get("beta_drift_limit", 10.0))
+                ))
+            con.executemany("""
+                INSERT INTO jp_open_positions
+                (pair, sym1, sym2, direction, qty1, qty2, beta_entry, entry_time, entry_price1, entry_price2, entry_z, pnl_unrealized, last_price1, last_price2, updated_at, engine_id, beta_drift_limit)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, records)
+
+
+def jp_save_pnl_snapshot(con: sqlite3.Connection, equity: float, realized: float, unrealized: float, open_count: int, closed_count: int) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            INSERT OR REPLACE INTO jp_pnl_summary (time, equity, realized_pnl, unrealized_pnl, open_pos_count, closed_trade_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (now_iso, equity, realized, unrealized, open_count, closed_count))
+
+
+def jp_save_daily_performance(con: sqlite3.Connection, date: str, realized_pnl: float, total_equity: float, num_trades: int, wins: int, losses: int, total_equity_mtm: float = None) -> None:
+    updated_at = datetime.now(timezone.utc).isoformat()
+    if total_equity_mtm is None:
+        total_equity_mtm = total_equity
+    with con:
+        con.execute("""
+            INSERT OR REPLACE INTO jp_daily_performance
+            (date, realized_pnl, total_equity, num_trades, wins, losses, updated_at, total_equity_mtm)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (date, realized_pnl, total_equity, num_trades, wins, losses, updated_at, total_equity_mtm))
+
+
+def jp_save_equity_snapshot(con: sqlite3.Connection, equity: float,
+                            realized_pnl: float = 0.0, unrealized_pnl: float = 0.0,
+                            open_positions: int = 0) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            INSERT INTO jp_equity_curve (timestamp, equity, realized_pnl, unrealized_pnl, open_positions)
+            VALUES (?, ?, ?, ?, ?)
+        """, (ts, equity, realized_pnl, unrealized_pnl, open_positions))
+
+
+def jp_upsert_pair_params(con: sqlite3.Connection, df: pd.DataFrame) -> None:
+    if df is None or df.empty:
+        return
+    required = ["pair", "z_entry", "z_exit", "max_drift_pct", "max_drift_delta", "alloc_pct", "enabled"]
+    subset = df[required].copy()
+    data = list(subset.itertuples(index=False, name=None))
+    with con:
+        con.executemany("""
+            INSERT OR REPLACE INTO jp_pair_params (pair, z_entry, z_exit, max_drift_pct, max_drift_delta, alloc_pct, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, data)
+
+
+def jp_save_1m_signal_logs(con: sqlite3.Connection, records: List[Dict[str, Any]]) -> None:
+    if not records:
+        return
+    with con:
+        con.executemany("""
+            INSERT INTO jp_pair_series_1m
+            (time, pair, px_a, px_b, hi_a, lo_a, hi_b, lo_b, vol_a, vol_b,
+             spread_1m, mean_30d_cached, std_30d_cached, z_1m, passed_persistence,
+             log_reason, engine_id, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [(
+            r.get("time"), r.get("pair"), r.get("px_a"), r.get("px_b"),
+            r.get("hi_a"), r.get("lo_a"), r.get("hi_b"), r.get("lo_b"),
+            r.get("vol_a"), r.get("vol_b"), r.get("spread_1m"),
+            r.get("mean_30d_cached"), r.get("std_30d_cached"), r.get("z_1m"),
+            1 if r.get("passed_persistence") else 0,
+            r.get("log_reason", "monitoring"), r.get("engine_id", "JP_1M"),
+            r.get("source", "yfinance")
+        ) for r in records])
+
+
+def jp_add_manual_command(con: sqlite3.Connection, command: str, payload: dict = None) -> None:
+    payload_json = json.dumps(payload) if payload else None
+    created_at = datetime.now(timezone.utc).isoformat()
+    with con:
+        con.execute("""
+            INSERT INTO jp_manual_commands (command, payload, status, created_at)
+            VALUES (?, ?, 'PENDING', ?)
+        """, (command, payload_json, created_at))
+
+
+def jp_update_position_limits(con: sqlite3.Connection, updates: List[Dict[str, Any]]) -> None:
+    if not updates:
+        return
+    with con:
+        con.executemany("""
+            UPDATE jp_open_positions
+            SET beta_drift_limit = :beta_drift_limit
+            WHERE pair = :pair
+        """, updates)
+
+
+# --- JP READERS ---
+
+def jp_get_latest_snapshot(con: sqlite3.Connection) -> pd.DataFrame:
+    return pd.read_sql_query("SELECT * FROM jp_live_metrics_snapshot", con)
+
+
+def jp_get_pair_history(con: sqlite3.Connection, pair: str, timeframe: str = "15m", limit: int = 500) -> pd.DataFrame:
+    return pd.read_sql_query("""
+        SELECT * FROM (
+            SELECT * FROM jp_pair_series
+            WHERE pair = ? AND timeframe = ?
+            ORDER BY time DESC
+            LIMIT ?
+        ) ORDER BY time ASC
+    """, con, params=(pair, timeframe, limit))
+
+
+def jp_get_open_positions(con: sqlite3.Connection) -> pd.DataFrame:
+    return pd.read_sql_query("SELECT * FROM jp_open_positions", con)
+
+
+def jp_get_pnl_history(con: sqlite3.Connection, limit: int = 100) -> pd.DataFrame:
+    return pd.read_sql_query("SELECT * FROM jp_pnl_summary ORDER BY time DESC LIMIT ?", con, params=(limit,))
+
+
+def jp_get_pair_params(con: sqlite3.Connection) -> pd.DataFrame:
+    return pd.read_sql_query("SELECT * FROM jp_pair_params", con)
+
+
+def jp_get_daily_performance(con: sqlite3.Connection, limit: int = 30) -> pd.DataFrame:
+    return pd.read_sql_query("SELECT * FROM jp_daily_performance ORDER BY date DESC LIMIT ?", con, params=(limit,))
+
+
+def jp_get_equity_curve(con: sqlite3.Connection, days: int = 30) -> pd.DataFrame:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return pd.read_sql_query(
+        "SELECT * FROM jp_equity_curve WHERE timestamp >= ? ORDER BY timestamp",
+        con, params=(cutoff,)
+    )
+
+
+def jp_get_1m_series(con: sqlite3.Connection, pair: str, start_time: str = None, end_time: str = None, limit: int = 500) -> pd.DataFrame:
+    query = "SELECT * FROM jp_pair_series_1m WHERE pair = ?"
+    params = [pair]
+    if start_time:
+        query += " AND time >= ?"
+        params.append(start_time)
+    if end_time:
+        query += " AND time <= ?"
+        params.append(end_time)
+    query += " ORDER BY time ASC LIMIT ?"
+    params.append(limit)
+    return pd.read_sql_query(query, con, params=params)
+
+
+def jp_get_pending_commands(con: sqlite3.Connection) -> List[Dict[str, Any]]:
+    cur = con.execute("SELECT * FROM jp_manual_commands WHERE status = 'PENDING' ORDER BY created_at ASC")
+    rows = cur.fetchall()
+    return [dict(zip([c[0] for c in cur.description], row)) for row in rows]
+
+
+def jp_get_risk_config(con: sqlite3.Connection) -> Dict[str, float]:
+    try:
+        rows = con.execute("SELECT key, value FROM jp_risk_config").fetchall()
+        return {k: v for k, v in rows}
+    except Exception:
+        return {}
+
+
+def jp_save_risk_config(con: sqlite3.Connection, updates: Dict[str, float]) -> None:
+    if not updates:
+        return
+    with con:
+        con.executemany(
+            "INSERT OR REPLACE INTO jp_risk_config (key, value) VALUES (?, ?)",
+            list(updates.items()),
+        )
