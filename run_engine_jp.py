@@ -258,7 +258,7 @@ class JPTradingEngine:
 
         for sym, df in frames_15m.items():
             if not df.empty:
-                self.cache_15m.seed(sym, df["close"])
+                self.cache_15m.seed(sym, df[["close"]].rename(columns={"close": sym}))
 
         # 3. Compute initial slow metrics
         self.heartbeat_thread.set_status("Warmup-SlowMetrics")
@@ -425,7 +425,7 @@ class JPTradingEngine:
                     frames_15m = fetch_many_symbols_15m(self.symbols, days=HISTORY_DAYS)
                     for sym, df in frames_15m.items():
                         if not df.empty:
-                            self.cache_15m.seed(sym, df["close"])
+                            self.cache_15m.seed(sym, df[["close"]].rename(columns={"close": sym}))
                     self._update_slow_metrics()
                     self._last_slow_refresh_wall = now
 
