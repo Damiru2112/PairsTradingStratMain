@@ -337,21 +337,29 @@ def get_jp_trade_candidates(metrics, params, raw_issues, is_market_open=True, bu
 
         blocks = []
 
+        # 1. Beta Drift
         drift_ok = drift_pct <= max_drift
         drift_display = f"{drift_pct:.1f}/{max_drift:.1f}%"
-        drift_display = f"{'✓' if drift_ok else '⛔'} {drift_display}"
         if not drift_ok:
             blocks.append("Beta Drift")
+            drift_display = f"⛔ {drift_display}"
+        else:
+            drift_display = f"✓ {drift_display}"
 
+        # 2. Z vs entry threshold
         z_passes = abs_z >= base_z_entry
         z_vs_eff_display = f"{abs_z:.2f}/{base_z_entry:.2f}"
-        z_vs_eff_display = f"{'✓' if z_passes else '⛔'} {z_vs_eff_display}"
         if not z_passes:
             blocks.append("Z < Entry")
+            z_vs_eff_display = f"⛔ {z_vs_eff_display}"
+        else:
+            z_vs_eff_display = f"✓ {z_vs_eff_display}"
 
+        # 3. Data/System block
         if has_global_block:
             blocks.append("Data/System")
 
+        # Status determination
         if has_global_block:
             status = "🔴 Blocked (Data)"
         elif pair in pair_issues and any(i["severity"] == "red" for i in pair_issues[pair]):
@@ -360,7 +368,10 @@ def get_jp_trade_candidates(metrics, params, raw_issues, is_market_open=True, bu
             at_entry = row["to_entry"] <= 0
             amber_drift = drift_pct > 0.8 * max_drift
             signal_old = is_market_open and row["time_since_mins"] > 30
-            if at_entry and not amber_drift and not signal_old:
+            amber_issues = pair in pair_issues and any(
+                i["severity"] == "amber" for i in pair_issues[pair]
+            )
+            if at_entry and not amber_drift and not signal_old and not amber_issues:
                 status = "✅ Valid"
             else:
                 status = "🟡 Watch"
@@ -900,16 +911,46 @@ def render(con):
     if filtered_candidates.empty:
         st.info("No JP pairs near entry thresholds right now.")
     else:
-        display_cols = ["pair", "abs_z", "to_entry_display", "drift_check", "z_vs_eff", "block_reason", "status"]
-        display_cols = [c for c in display_cols if c in filtered_candidates.columns]
+        # Smart filter default: "Blocked only" when ISSUES DETECTED, else "All"
+        default_filter = "Blocked only" if "ISSUES DETECTED" in verdict_title else "All"
+        filter_options = ["All", "Valid only", "Blocked only"]
+
+        if "jp_candidates_filter" not in st.session_state:
+            st.session_state["jp_candidates_filter"] = default_filter
+
+        # Layout: filter + jump to pair
+        filter_col, jump_col = st.columns([1, 1])
+
+        with filter_col:
+            selected_filter = st.radio(
+                "Filter",
+                filter_options,
+                index=filter_options.index(st.session_state.get("jp_candidates_filter", default_filter)),
+                horizontal=True,
+                key="jp_candidates_filter_radio"
+            )
+            st.session_state["jp_candidates_filter"] = selected_filter
+
+        # Apply filter
+        display_df = filtered_candidates.copy()
+        if selected_filter == "Valid only":
+            display_df = display_df[display_df["status"].str.contains("Valid")]
+        elif selected_filter == "Blocked only":
+            display_df = display_df[display_df["status"].str.contains("Blocked")]
+
+        display_cols = [
+            "pair", "abs_z", "to_entry_display", "drift_check", "z_vs_eff",
+            "block_reason", "status"
+        ]
+        display_cols = [c for c in display_cols if c in display_df.columns]
         col_names = {
             "pair": "Pair", "abs_z": "|Z|", "to_entry_display": "To Entry",
             "drift_check": "Drift (Act/Lim)", "z_vs_eff": "|Z| vs Entry",
             "block_reason": "Block Reason", "status": "Status",
         }
 
-        if not filtered_candidates.empty:
-            renamed_df = filtered_candidates[display_cols].rename(columns=col_names)
+        if not display_df.empty:
+            renamed_df = display_df[display_cols].rename(columns=col_names)
 
             def style_risk_cells(row):
                 styles = []
@@ -917,6 +958,8 @@ def render(con):
                     val_str = str(val) if val is not None else ""
                     if "⛔" in val_str:
                         styles.append("background-color: #5a2525; color: #ff6b6b")
+                    elif "⚠" in val_str:
+                        styles.append("background-color: #5a4525; color: #ffb74d")
                     elif col_name == "Status":
                         if "Blocked" in val_str:
                             styles.append("background-color: #5a2525; color: #ff6b6b")
@@ -935,6 +978,21 @@ def render(con):
             styled_df = renamed_df.style.apply(style_risk_cells, axis=1)
             st.dataframe(styled_df, use_container_width=True, hide_index=True,
                         column_config={"|Z|": st.column_config.NumberColumn("|Z|", format="%.2f")})
+
+            # Jump to Pair Analysis
+            with jump_col:
+                candidate_pairs = display_df["pair"].tolist()
+                if candidate_pairs:
+                    jump_pair = st.selectbox(
+                        "Jump to Pair Analysis",
+                        ["Select..."] + candidate_pairs,
+                        key="jp_candidates_jump"
+                    )
+                    if jump_pair and jump_pair != "Select...":
+                        st.session_state["jp_selected_pair_override"] = jump_pair
+                        st.success(f"Selected {jump_pair} — scroll down to Pair Analysis.")
+        else:
+            st.caption(f"No {selected_filter.lower().replace(' only', '')} candidates found.")
 
     st.divider()
 

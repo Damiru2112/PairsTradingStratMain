@@ -20,6 +20,14 @@ JP_PAIRS = [
     "1928.T-4452.T",
     "2002.T-2269.T",
     "6103.T-6113.T",
+    "9020.T-9021.T",   # JR East & JR West
+    "8001.T-8002.T",   # Itochu & Marubeni
+    "7267.T-7270.T",   # Honda & Subaru
+    "6758.T-6752.T",   # Sony & Panasonic
+    "8411.T-8604.T",   # Mizuho & Nomura
+    "9005.T-9001.T",   # Tokyu & Tobu Railway
+    "6504.T-6701.T",   # Fuji Electric & NEC
+    "2914.T-9532.T",   # Japan Tobacco & Osaka Gas
 ]
 
 # Default parameters
